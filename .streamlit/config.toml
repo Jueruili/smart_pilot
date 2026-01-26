@@ -1,0 +1,25 @@
+# Streamlit 設定檔
+
+[server]
+# 伺服器設定
+port = 8501
+enableCORS = false
+enableXsrfProtection = true
+maxUploadSize = 200
+
+[browser]
+# 瀏覽器設定
+gatherUsageStats = false
+
+[theme]
+# 主題設定
+primaryColor = "#2196F3"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F5F5F5"
+textColor = "#212121"
+font = "sans serif"
+
+[client]
+# 客戶端設定
+showErrorDetails = true
+toolbarMode = "auto"
