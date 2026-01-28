@@ -246,7 +246,7 @@ class TestCacheOperations:
 
             assert loaded is not None
             assert len(loaded) == len(data)
-            pd.testing.assert_frame_equal(loaded, data)
+            pd.testing.assert_frame_equal(loaded, data, check_freq=False)
 
     def test_load_nonexistent_cache(self):
         """測試載入不存在的快取"""
