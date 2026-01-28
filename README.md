@@ -28,7 +28,8 @@ smart_pilot/
 │   └── parameters.yaml            # 參數配置檔
 ├── tests/
 │   ├── __init__.py
-│   └── test_pid.py                # 單元測試
+│   ├── test_pid.py                # PID 控制器測試 ✅
+│   └── test_data_loader.py        # 資料載入器測試 ✅
 ├── requirements.txt               # 依賴套件
 ├── .streamlit/
 │   └── config.toml                # Streamlit 設定
@@ -125,8 +126,25 @@ print(pid.get_state())
 ### 執行測試
 
 ```bash
+# 執行所有測試
 pytest tests/ -v
+
+# 只執行 PID 控制器測試
+pytest tests/test_pid.py -v
+
+# 只執行 DataLoader 測試
+pytest tests/test_data_loader.py -v
+
+# 執行測試並顯示覆蓋率
+pytest tests/ -v --cov=core --cov=data
 ```
+
+**測試涵蓋範圍：**
+
+| 測試檔案 | 測試目標 |
+|----------|----------|
+| `test_pid.py` | IncrementalPID 類別 |
+| `test_data_loader.py` | DataLoader 類別 |
 
 ## 核心概念
 
@@ -158,6 +176,7 @@ pytest tests/ -v
 - [x] Phase 1: 專案結構建立
   - [x] PID 控制器實作 (`core/pid_controller.py`)
   - [x] 資料載入模組 (`data/data_loader.py`)
+  - [x] 單元測試 (`tests/test_pid.py`, `tests/test_data_loader.py`)
   - [ ] 投資組合管理框架
   - [ ] 績效指標計算
   - [ ] 驗證模組框架
