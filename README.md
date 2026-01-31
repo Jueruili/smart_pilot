@@ -29,7 +29,8 @@ smart_pilot/
 ├── tests/
 │   ├── __init__.py
 │   ├── test_pid.py                # PID 控制器測試 ✅
-│   └── test_data_loader.py        # 資料載入器測試 ✅
+│   ├── test_data_loader.py        # 資料載入器測試 ✅
+│   └── test_backtest_engine.py    # 回測引擎測試 ✅
 ├── requirements.txt               # 依賴套件
 ├── .streamlit/
 │   └── config.toml                # Streamlit 設定
@@ -192,6 +193,9 @@ pytest tests/test_pid.py -v
 # 只執行 DataLoader 測試
 pytest tests/test_data_loader.py -v
 
+# 只執行 BacktestEngine 測試
+pytest tests/test_backtest_engine.py -v
+
 # 執行測試並顯示覆蓋率
 pytest tests/ -v --cov=core --cov=data
 ```
@@ -202,6 +206,7 @@ pytest tests/ -v --cov=core --cov=data
 |----------|----------|
 | `test_pid.py` | IncrementalPID 類別 |
 | `test_data_loader.py` | DataLoader 類別 |
+| `test_backtest_engine.py` | BacktestEngine 類別 |
 
 ## 核心概念
 
@@ -233,7 +238,7 @@ pytest tests/ -v --cov=core --cov=data
 - [x] Phase 1: 專案結構建立
   - [x] PID 控制器實作 (`core/pid_controller.py`)
   - [x] 資料載入模組 (`data/data_loader.py`)
-  - [x] 單元測試 (`tests/test_pid.py`, `tests/test_data_loader.py`)
+  - [x] 單元測試 (`tests/test_pid.py`, `tests/test_data_loader.py`, `tests/test_backtest_engine.py`)
   - [ ] 投資組合管理框架
   - [ ] 績效指標計算
   - [ ] 驗證模組框架
