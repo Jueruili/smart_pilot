@@ -10,7 +10,7 @@ smart_pilot/
 ├── core/
 │   ├── __init__.py
 │   ├── pid_controller.py          # 增量型 PID 控制器 ✅
-│   ├── backtest_engine.py         # 回測引擎
+│   ├── backtest_engine.py         # 回測引擎 ✅
 │   ├── portfolio.py               # 投資組合管理
 │   └── metrics.py                 # 績效指標計算
 ├── data/
@@ -97,6 +97,63 @@ returns = loader.get_returns(data, method="simple")
 - 標的：`["SPY", "TLT"]`
 - 期間：`2013-01-01` ~ `2025-12-31`
 
+### 使用 BacktestEngine 執行回測
+
+```python
+from data.data_loader import DataLoader
+from core.backtest_engine import BacktestEngine
+
+# 1. 載入資料
+loader = DataLoader()
+data = loader.load_and_process(["SPY", "TLT"], "2015-01-01", "2023-12-31")
+
+# 2. 初始化回測引擎
+engine = BacktestEngine(
+    initial_cash=1_000_000,        # 初始資金
+    target_ratio=0.6,              # 目標股票比例 60%
+    pid_params={"kp": 1.0, "ki": 0.1, "kd": 2.0},
+    deadband=0.01,                 # 死區閾值 1%
+    commission_rate=0.001          # 手續費率 0.1%
+)
+
+# 3. 執行回測
+result = engine.run(data)
+
+# 4. 查看結果
+print(f"總報酬率: {result.total_return:.2%}")
+print(f"年化報酬率: {result.annualized_return:.2%}")
+print(f"最大回撤: {result.max_drawdown:.2%}")
+print(f"夏普比率: {result.sharpe_ratio:.2f}")
+
+# 5. 取得詳細報告
+print(engine.get_summary(result))
+
+# 6. 存取歷史記錄
+history = result.history
+print(history[["nav", "ratio", "trade_flag"]].tail())
+```
+
+**BacktestEngine 參數：**
+
+| 參數 | 預設值 | 說明 |
+|------|--------|------|
+| `initial_cash` | 1,000,000 | 初始資金 |
+| `target_ratio` | 0.6 | 目標股票比例（0-1） |
+| `pid_params` | {"kp":1.0, "ki":0.1, "kd":2.0} | PID 參數 |
+| `deadband` | 0.01 | 死區閾值（調整量低於此值不交易） |
+| `commission_rate` | 0.001 | 手續費率 |
+
+**回測結果欄位：**
+
+| 欄位 | 說明 |
+|------|------|
+| `nav` | 淨值 |
+| `ratio` | 實際股票比例 |
+| `error` | 誤差（目標 - 實際） |
+| `delta_u` | PID 調整量 |
+| `trade_flag` | 是否執行交易 |
+| `commission` | 當日手續費 |
+
 ### 使用 PID 控制器
 
 ```python
@@ -181,7 +238,7 @@ pytest tests/ -v --cov=core --cov=data
   - [ ] 績效指標計算
   - [ ] 驗證模組框架
   - [ ] 視覺化模組框架
-- [ ] Phase 2: 回測引擎完整實作
+- [x] Phase 2: 回測引擎完整實作 (`core/backtest_engine.py`)
 - [ ] Phase 3: Streamlit UI 開發
 - [ ] Phase 4: 進階功能
 
