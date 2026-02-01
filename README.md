@@ -19,7 +19,7 @@ smart_pilot/
 │   └── cache/                     # 快取資料夾（CSV 格式）
 ├── validation/
 │   ├── __init__.py
-│   ├── out_of_sample.py           # 樣本外測試
+│   ├── out_of_sample.py           # 樣本外測試 ✅
 │   └── monte_carlo.py             # 蒙地卡羅模擬
 ├── visualization/
 │   ├── __init__.py
@@ -202,6 +202,65 @@ print(calculator.format_report(metrics))
 | | `average_gain` | 平均獲利 |
 | | `average_loss` | 平均虧損 |
 
+### 使用 OutOfSampleValidator 執行樣本外驗證
+
+```python
+from data.data_loader import DataLoader
+from core.backtest_engine import BacktestEngine
+from validation.out_of_sample import OutOfSampleValidator, quick_validate
+
+# 1. 載入資料
+loader = DataLoader()
+data = loader.load_and_process(["SPY", "TLT"], "2015-01-01", "2025-12-31")
+
+# 2. 建立回測引擎
+engine = BacktestEngine(
+    target_ratio=0.6,
+    pid_params={"kp": 1.0, "ki": 0.1, "kd": 2.0}
+)
+
+# 3. 建立驗證器並執行驗證
+validator = OutOfSampleValidator(overfitting_threshold=0.5)
+result = validator.validate(engine, data, split_date="2024-01-01")
+
+# 4. 查看結果
+print(f"是否過擬合: {result.is_overfitted}")
+print(f"樣本內報酬: {result.in_sample_metrics['total_return']:.2%}")
+print(f"樣本外報酬: {result.out_of_sample_metrics['total_return']:.2%}")
+
+# 5. 取得完整報告
+print(validator.get_report(result))
+
+# 方法 2：使用便捷函數
+result = quick_validate(data, split_date="2024-01-01", target_ratio=0.6)
+```
+
+**OutOfSampleValidator 方法：**
+
+| 方法 | 功能 |
+|------|------|
+| `split_data(data, split_date)` | 分割資料為樣本內/樣本外 |
+| `validate(engine, data, split_date)` | 執行完整驗證流程 |
+| `compare_performance(is_metrics, oos_metrics)` | 比較兩個時期的績效 |
+| `get_report(result)` | 生成格式化報告 |
+
+**ValidationResult 欄位：**
+
+| 欄位 | 說明 |
+|------|------|
+| `in_sample_result` | 樣本內回測結果 |
+| `out_of_sample_result` | 樣本外回測結果 |
+| `in_sample_metrics` | 樣本內績效指標 |
+| `out_of_sample_metrics` | 樣本外績效指標 |
+| `comparison` | 績效比較報告 |
+| `is_overfitted` | 是否過擬合 |
+| `split_date` | 分割日期 |
+
+**過擬合判斷標準：**
+- 夏普比率比率 < 0.5（樣本外/樣本內）
+- 報酬率比率 < 0.5（樣本外/樣本內）
+- 一致性分數 < 0.3
+
 ### 使用 PID 控制器
 
 ```python
@@ -288,7 +347,8 @@ pytest tests/ -v --cov=core --cov=data
   - [x] 績效指標計算 (`core/metrics.py`)
   - [x] 單元測試 (`tests/test_pid.py`, `tests/test_data_loader.py`, `tests/test_backtest_engine.py`)
   - [ ] 投資組合管理框架
-  - [ ] 驗證模組框架
+  - [x] 樣本外驗證模組 (`validation/out_of_sample.py`)
+  - [ ] 蒙地卡羅模擬模組
   - [ ] 視覺化模組框架
 - [x] Phase 2: 回測引擎完整實作 (`core/backtest_engine.py`)
 - [ ] Phase 3: Streamlit UI 開發
