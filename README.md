@@ -12,7 +12,7 @@ smart_pilot/
 │   ├── pid_controller.py          # 增量型 PID 控制器 ✅
 │   ├── backtest_engine.py         # 回測引擎 ✅
 │   ├── portfolio.py               # 投資組合管理
-│   └── metrics.py                 # 績效指標計算
+│   └── metrics.py                 # 績效指標計算 ✅
 ├── data/
 │   ├── __init__.py
 │   ├── data_loader.py             # yfinance 資料下載 ✅
@@ -155,6 +155,53 @@ print(history[["nav", "ratio", "trade_flag"]].tail())
 | `trade_flag` | 是否執行交易 |
 | `commission` | 當日手續費 |
 
+### 使用 MetricsCalculator 計算績效指標
+
+```python
+from core.metrics import MetricsCalculator
+from core.backtest_engine import BacktestEngine
+
+# 執行回測
+engine = BacktestEngine()
+result = engine.run(data)
+
+# 初始化績效計算器
+calculator = MetricsCalculator(risk_free_rate=0.02)
+
+# 計算所有指標
+metrics = calculator.calculate_all_metrics(result.history)
+
+# 查看指標
+print(f"總報酬率: {metrics['total_return']:.2%}")
+print(f"年化報酬率: {metrics['annual_return']:.2%}")
+print(f"最大回撤: {metrics['max_drawdown']:.2%}")
+print(f"夏普比率: {metrics['sharpe_ratio']:.2f}")
+print(f"索提諾比率: {metrics['sortino_ratio']:.2f}")
+print(f"勝率: {metrics['win_rate']:.1%}")
+
+# 格式化報告
+print(calculator.format_report(metrics))
+```
+
+**MetricsCalculator 計算的指標：**
+
+| 類別 | 指標 | 說明 |
+|------|------|------|
+| **基礎** | `total_return` | 總報酬率 |
+| | `annual_return` | 年化報酬率 |
+| | `total_trades` | 總交易次數 |
+| | `total_commission` | 總手續費 |
+| **風險** | `max_drawdown` | 最大回撤 (MDD) |
+| | `volatility` | 年化波動率 |
+| | `downside_volatility` | 下行波動率 |
+| | `var_95` / `var_99` | 風險值 (VaR) |
+| **風險調整** | `sharpe_ratio` | 夏普比率 |
+| | `sortino_ratio` | 索提諾比率 |
+| | `calmar_ratio` | 卡瑪比率 |
+| **交易分析** | `win_rate` | 勝率 |
+| | `average_gain` | 平均獲利 |
+| | `average_loss` | 平均虧損 |
+
 ### 使用 PID 控制器
 
 ```python
@@ -238,9 +285,9 @@ pytest tests/ -v --cov=core --cov=data
 - [x] Phase 1: 專案結構建立
   - [x] PID 控制器實作 (`core/pid_controller.py`)
   - [x] 資料載入模組 (`data/data_loader.py`)
+  - [x] 績效指標計算 (`core/metrics.py`)
   - [x] 單元測試 (`tests/test_pid.py`, `tests/test_data_loader.py`, `tests/test_backtest_engine.py`)
   - [ ] 投資組合管理框架
-  - [ ] 績效指標計算
   - [ ] 驗證模組框架
   - [ ] 視覺化模組框架
 - [x] Phase 2: 回測引擎完整實作 (`core/backtest_engine.py`)
