@@ -20,7 +20,7 @@ smart_pilot/
 ├── validation/
 │   ├── __init__.py
 │   ├── out_of_sample.py           # 樣本外測試 ✅
-│   └── monte_carlo.py             # 蒙地卡羅模擬
+│   └── monte_carlo.py             # 蒙地卡羅模擬 ✅
 ├── visualization/
 │   ├── __init__.py
 │   └── charts.py                  # 圖表生成
@@ -261,6 +261,63 @@ result = quick_validate(data, split_date="2024-01-01", target_ratio=0.6)
 - 報酬率比率 < 0.5（樣本外/樣本內）
 - 一致性分數 < 0.3
 
+### 使用 MonteCarloSimulator 執行蒙地卡羅模擬
+
+```python
+from core.backtest_engine import BacktestEngine
+from data.data_loader import DataLoader
+from validation.monte_carlo import MonteCarloSimulator, quick_simulate
+
+# 1. 載入資料並執行回測
+loader = DataLoader()
+data = loader.load_and_process()
+engine = BacktestEngine(target_ratio=0.6)
+backtest_result = engine.run(data)
+
+# 2. 建立模擬器（設定隨機種子可重現結果）
+simulator = MonteCarloSimulator(random_seed=42)
+
+# 3. 執行蒙地卡羅模擬
+result = simulator.simulate(backtest_result, n_simulations=10000)
+
+# 4. 查看統計結果
+stats = result.statistics
+print(f"平均報酬率: {stats['mean_return']:.2%}")
+print(f"標準差: {stats['std_return']:.2%}")
+print(f"賺錢機率: {stats['prob_profit']:.1%}")
+print(f"破產風險: {stats['ruin_risk']:.1%}")
+print(f"95% CI: [{stats['ci_95_lower']:.2%}, {stats['ci_95_upper']:.2%}]")
+
+# 5. 取得完整報告
+print(simulator.get_report(result))
+
+# 方法 2：使用便捷函數
+result = quick_simulate(backtest_result, n_simulations=10000, random_seed=42)
+```
+
+**MonteCarloSimulator 方法：**
+
+| 方法 | 功能 |
+|------|------|
+| `simulate(backtest_result, n_simulations)` | 執行 Bootstrap 蒙地卡羅模擬 |
+| `analyze_results(simulations)` | 分析模擬結果，計算統計指標 |
+| `get_report(result)` | 生成格式化報告 |
+| `reset_seed(new_seed)` | 重設隨機種子 |
+
+**統計指標：**
+
+| 類別 | 指標 | 說明 |
+|------|------|------|
+| **基本統計** | `mean_return` | 平均報酬率 |
+| | `std_return` | 標準差 |
+| | `median_return` | 中位數報酬率 |
+| **機率** | `prob_profit` | 賺錢機率（報酬 > 0） |
+| | `ruin_risk` | 破產風險（虧損 > 50%） |
+| **信賴區間** | `ci_95_lower/upper` | 95% 信賴區間（2.5%, 97.5%） |
+| | `ci_99_lower/upper` | 99% 信賴區間（0.5%, 99.5%） |
+| **極端情況** | `best_case` | 最佳情況報酬 |
+| | `worst_case` | 最差情況報酬 |
+
 ### 使用 PID 控制器
 
 ```python
@@ -348,7 +405,7 @@ pytest tests/ -v --cov=core --cov=data
   - [x] 單元測試 (`tests/test_pid.py`, `tests/test_data_loader.py`, `tests/test_backtest_engine.py`)
   - [ ] 投資組合管理框架
   - [x] 樣本外驗證模組 (`validation/out_of_sample.py`)
-  - [ ] 蒙地卡羅模擬模組
+  - [x] 蒙地卡羅模擬模組 (`validation/monte_carlo.py`)
   - [ ] 視覺化模組框架
 - [x] Phase 2: 回測引擎完整實作 (`core/backtest_engine.py`)
 - [ ] Phase 3: Streamlit UI 開發
