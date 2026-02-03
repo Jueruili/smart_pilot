@@ -6,7 +6,7 @@
 
 ```
 smart_pilot/
-├── app.py                          # Streamlit 主程式
+├── app.py                          # Streamlit 主程式 ✅
 ├── core/
 │   ├── __init__.py
 │   ├── pid_controller.py          # 增量型 PID 控制器 ✅
@@ -56,6 +56,28 @@ pip install -r requirements.txt
 ```bash
 streamlit run app.py
 ```
+
+**Streamlit 應用功能：**
+
+1. **側邊欄參數設定：**
+   - 初始資金（預設 1,000,000 USD）
+   - 目標股票比例（滑桿 0-100%，預設 60%）
+   - 風險偏好（保守/穩健/積極）
+   - 進階設定（死區閾值、手續費率）
+
+2. **風險偏好對應 PID 參數：**
+
+   | 風險偏好 | Kp | Ki | Kd |
+   |----------|-----|------|-----|
+   | 保守 | 0.8 | 0.05 | 3.0 |
+   | 穩健 | 1.0 | 0.1 | 2.0 |
+   | 積極 | 1.5 | 0.2 | 1.0 |
+
+3. **回測結果顯示：**
+   - 關鍵指標卡片（總報酬率、夏普比率、最大回撤）
+   - 資產淨值曲線圖
+   - 詳細績效指標表格
+   - 下載交易明細 CSV
 
 ### 使用 DataLoader 載入資料
 
@@ -408,7 +430,7 @@ pytest tests/ -v --cov=core --cov=data
   - [x] 蒙地卡羅模擬模組 (`validation/monte_carlo.py`)
   - [ ] 視覺化模組框架
 - [x] Phase 2: 回測引擎完整實作 (`core/backtest_engine.py`)
-- [ ] Phase 3: Streamlit UI 開發
+- [x] Phase 3: Streamlit UI 開發 (`app.py`)
 - [ ] Phase 4: 進階功能
 
 ## 授權
