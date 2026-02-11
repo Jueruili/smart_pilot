@@ -37,9 +37,9 @@ st.set_page_config(
 # 風險偏好對應的 PID 參數
 # =============================================================================
 RISK_PROFILES = {
-    "保守": {"kp": 0.8, "ki": 0.05, "kd": 3.0},
-    "穩健": {"kp": 1.0, "ki": 0.1, "kd": 2.0},
-    "積極": {"kp": 1.5, "ki": 0.2, "kd": 1.0},
+    "保守": {"kp": 0.15, "ki": 0.02, "kd": 0.05},
+    "穩健": {"kp": 0.3, "ki": 0.05, "kd": 0.1},
+    "積極": {"kp": 0.5, "ki": 0.1, "kd": 0.2},
 }
 
 
@@ -98,6 +98,17 @@ def render_sidebar() -> dict:
         help="股票（SPY）在投資組合中的目標比例，其餘為債券（TLT）"
     )
 
+    # 標的設定
+    st.sidebar.subheader("📌 投資標的")
+    stock_ticker = st.sidebar.text_input(
+        "股票標的", value="VTI",
+        help="股票型 ETF 代碼（如 SPY, QQQ, VTI）"
+    ).upper().strip()
+    bond_ticker = st.sidebar.text_input(
+        "債券標的", value="BND",
+        help="債券型 ETF 代碼（如 TLT, BND, AGG）"
+    ).upper().strip()
+    
     # 風險偏好
     st.sidebar.subheader("🎯 風險偏好")
     risk_profile = st.sidebar.selectbox(
@@ -150,8 +161,8 @@ def render_sidebar() -> dict:
     with st.sidebar.expander("ℹ️ 系統資訊"):
         st.write("**版本:** 1.0.0")
         st.write("**資料來源:** Yahoo Finance")
-        st.write("**股票標的:** SPY (S&P 500)")
-        st.write("**債券標的:** TLT (20+ Year Treasury)")
+        st.write(f"**股票標的:** {stock_ticker}")
+        st.write(f"**債券標的:** {bond_ticker}")
         st.write("**資料期間:** 2013-01-01 ~ 2025-12-31")
 
     return {
@@ -161,6 +172,8 @@ def render_sidebar() -> dict:
         "pid_params": pid_params,
         "deadband": deadband,
         "commission_rate": commission_rate,
+        "stock_ticker": stock_ticker,    
+        "bond_ticker": bond_ticker, 
     }
 
 
@@ -225,10 +238,11 @@ def run_backtest(params: dict):
             # a. 載入資料
             st.text("📥 載入資料中...")
             data = load_data(
-                tickers=["SPY", "TLT"],
+                tickers=[params["stock_ticker"], params["bond_ticker"]],
                 start_date="2013-01-01",
                 end_date="2025-12-31"
             )
+            data = data[[params["stock_ticker"], params["bond_ticker"]]]
 
             # b. 執行回測
             st.text("⚙️ 執行回測中...")
