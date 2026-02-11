@@ -851,9 +851,15 @@ def render_tab_out_of_sample(engine, data, params: dict, calculator):
         mode="lines", name="樣本外 (2024-2025)",
         line=dict(color="#ff7f0e", width=2)
     ))
-    fig_oos.add_vline(
-        x=pd.Timestamp("2024-01-01"), line_dash="dash", line_color="red",
-        annotation_text="2024-01-01 分割點"
+    fig_oos.add_shape(
+        type="line",
+        x0="2024-01-01", x1="2024-01-01",
+        y0=0, y1=1, yref="paper",
+        line=dict(color="red", width=2, dash="dash")
+    )
+    fig_oos.add_annotation(
+        x="2024-01-01", y=1.05, yref="paper",
+        text="2024-01-01 分割點", showarrow=False, font=dict(color="red")
     )
     fig_oos.update_layout(
         xaxis_title="日期",
