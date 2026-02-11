@@ -841,7 +841,7 @@ def render_tab_out_of_sample(engine, data, params: dict, calculator):
         line=dict(color="#ff7f0e", width=2)
     ))
     fig_oos.add_vline(
-        x="2024-01-01", line_dash="dash", line_color="red",
+        x=pd.Timestamp("2024-01-01"), line_dash="dash", line_color="red",
         annotation_text="2024-01-01 分割點"
     )
     fig_oos.update_layout(
