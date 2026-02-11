@@ -21,7 +21,7 @@ import yfinance as yf
 
 
 # 預設參數
-DEFAULT_TICKERS: list[str] = ["SPY", "TLT"]
+DEFAULT_TICKERS: list[str] = ["VTI", "BND"]
 DEFAULT_START_DATE: str = "2013-01-01"
 DEFAULT_END_DATE: str = "2025-12-31"
 

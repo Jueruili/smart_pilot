@@ -11,6 +11,7 @@ smart_pilot/
 │   ├── __init__.py
 │   ├── pid_controller.py          # 增量型 PID 控制器 ✅
 │   ├── backtest_engine.py         # 回測引擎 ✅
+│   ├── benchmark.py               # 對照策略（Threshold/Yearly）✅
 │   ├── portfolio.py               # 投資組合管理
 │   └── metrics.py                 # 績效指標計算 ✅
 ├── data/
@@ -57,27 +58,33 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-**Streamlit 應用功能：**
+**Streamlit 應用功能（v2.0）：**
 
 1. **側邊欄參數設定：**
    - 初始資金（預設 1,000,000 USD）
    - 目標股票比例（滑桿 0-100%，預設 60%）
    - 風險偏好（保守/穩健/積極）
+   - **PID 參數可直接編輯**（Kp, Ki, Kd）
    - 進階設定（死區閾值、手續費率）
 
-2. **風險偏好對應 PID 參數：**
+2. **風險偏好對應 PID 參數（新版）：**
 
-   | 風險偏好 | Kp | Ki | Kd |
-   |----------|-----|------|-----|
-   | 保守 | 0.8 | 0.05 | 3.0 |
-   | 穩健 | 1.0 | 0.1 | 2.0 |
-   | 積極 | 1.5 | 0.2 | 1.0 |
+   | 風險偏好 | Kp | Ki | Kd | Deadband |
+   |----------|-----|------|-----|----------|
+   | 保守 | 0.15 | 0.02 | 0.05 | 3% |
+   | 穩健 | 0.3 | 0.05 | 0.1 | 2% |
+   | 積極 | 0.5 | 0.1 | 0.2 | 1% |
 
-3. **回測結果顯示：**
-   - 關鍵指標卡片（總報酬率、夏普比率、最大回撤）
-   - 資產淨值曲線圖
-   - 詳細績效指標表格
-   - 下載交易明細 CSV
+3. **四個分頁顯示結果：**
+
+   - **📈 回測結果**：績效指標、淨值曲線、PID 控制訊號圖、下載 CSV
+   - **⚔️ 策略對比**：Smart Pilot vs Threshold 5% vs Yearly Rebalance
+   - **🎲 蒙地卡羅模擬**：10,000 次模擬、報酬分布、智慧診斷
+   - **🔬 樣本外測試**：過擬合檢測、一致性分析、智慧建議
+
+4. **智慧診斷提示：**
+   - 根據分析結果自動提供參數調整建議
+   - 識別潛在風險並給出改善方向
 
 ### 使用 DataLoader 載入資料
 
@@ -340,6 +347,46 @@ result = quick_simulate(backtest_result, n_simulations=10000, random_seed=42)
 | **極端情況** | `best_case` | 最佳情況報酬 |
 | | `worst_case` | 最差情況報酬 |
 
+### 使用對照策略（Benchmark）
+
+```python
+from core.benchmark import run_threshold_rebalance, run_yearly_rebalance, calculate_tracking_error
+from data.data_loader import DataLoader
+
+# 載入資料
+loader = DataLoader()
+data = loader.load_and_process()
+
+# 執行門檻再平衡策略（偏離 5% 才交易）
+threshold_history = run_threshold_rebalance(
+    data=data,
+    initial_cash=1_000_000,
+    target_ratio=0.6,
+    threshold=0.05,
+    commission_rate=0.001
+)
+
+# 執行年度再平衡策略（每年初再平衡）
+yearly_history = run_yearly_rebalance(
+    data=data,
+    initial_cash=1_000_000,
+    target_ratio=0.6,
+    commission_rate=0.001
+)
+
+# 計算追蹤誤差
+rmse = calculate_tracking_error(threshold_history["ratio"], target_ratio=0.6)
+print(f"追蹤誤差 RMSE: {rmse:.2%}")
+```
+
+**對照策略：**
+
+| 策略 | 說明 |
+|------|------|
+| `run_threshold_rebalance()` | 門檻再平衡：偏離超過門檻才交易 |
+| `run_yearly_rebalance()` | 年度再平衡：每年第一個交易日再平衡 |
+| `calculate_tracking_error()` | 計算追蹤誤差 RMSE |
+
 ### 使用 PID 控制器
 
 ```python
@@ -428,9 +475,15 @@ pytest tests/ -v --cov=core --cov=data
   - [ ] 投資組合管理框架
   - [x] 樣本外驗證模組 (`validation/out_of_sample.py`)
   - [x] 蒙地卡羅模擬模組 (`validation/monte_carlo.py`)
+  - [x] 對照策略模組 (`core/benchmark.py`)
   - [ ] 視覺化模組框架
 - [x] Phase 2: 回測引擎完整實作 (`core/backtest_engine.py`)
 - [x] Phase 3: Streamlit UI 開發 (`app.py`)
+  - [x] PID 參數可編輯
+  - [x] 策略對比功能
+  - [x] 蒙地卡羅模擬整合
+  - [x] 樣本外測試整合
+  - [x] 智慧診斷提示
 - [ ] Phase 4: 進階功能
 
 ## 授權

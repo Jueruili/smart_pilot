@@ -24,8 +24,8 @@ from core.pid_controller import IncrementalPID
 # 預設參數
 DEFAULT_INITIAL_CASH: float = 1_000_000.0
 DEFAULT_TARGET_RATIO: float = 0.6
-DEFAULT_PID_PARAMS: dict = {"kp": 1.0, "ki": 0.1, "kd": 2.0}
-DEFAULT_DEADBAND: float = 0.01
+DEFAULT_PID_PARAMS: dict = {"kp": 0.3, "ki": 0.05, "kd": 0.1}
+DEFAULT_DEADBAND: float = 0.02
 DEFAULT_COMMISSION_RATE: float = 0.001
 DEFAULT_EXCHANGE_RATE: float = 30.5
 
@@ -263,6 +263,8 @@ class BacktestEngine:
 
             # Step 3: PID 計算調整量
             delta_u = self.pid.calculate(error)
+            MAX_ADJUSTMENT = 0.05  # 單次最多調整 5%
+            delta_u = np.clip(delta_u, -MAX_ADJUSTMENT, MAX_ADJUSTMENT)
 
             # Step 4: 判斷是否執行交易
             trade_flag = abs(delta_u) > self.deadband
