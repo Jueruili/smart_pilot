@@ -69,10 +69,10 @@ def load_data(tickers: list, start_date: str, end_date: str) -> pd.DataFrame:
 # =============================================================================
 def render_sidebar() -> dict:
     """渲染側邊欄並返回使用者輸入的參數"""
-    st.sidebar.header("⚙️ 參數設定")
+    st.sidebar.header(" 參數設定")
 
     # 初始資金
-    st.sidebar.subheader("💰 初始資金")
+    st.sidebar.subheader(" 初始資金")
     initial_cash = st.sidebar.number_input(
         "初始資金 (USD)",
         min_value=10_000,
@@ -84,7 +84,7 @@ def render_sidebar() -> dict:
     )
 
     # 目標股票比例
-    st.sidebar.subheader("📈 資產配置")
+    st.sidebar.subheader(" 資產配置")
     target_ratio = st.sidebar.slider(
         "目標股票比例",
         min_value=0,
@@ -96,7 +96,7 @@ def render_sidebar() -> dict:
     )
 
     # 標的設定
-    st.sidebar.subheader("📌 投資標的")
+    st.sidebar.subheader(" 投資標的")
     stock_ticker = st.sidebar.text_input(
         "股票標的", value="VTI",
         help="股票型 ETF 代碼（如 SPY, QQQ, VTI）"
@@ -107,7 +107,7 @@ def render_sidebar() -> dict:
     ).upper().strip()
     
     # 風險偏好
-    st.sidebar.subheader("🎯 風險偏好")
+    st.sidebar.subheader(" 風險偏好")
     risk_profile = st.sidebar.selectbox(
         "選擇風險偏好",
         options=list(RISK_PROFILES.keys()),
@@ -119,7 +119,7 @@ def render_sidebar() -> dict:
     default_params = RISK_PROFILES[risk_profile]
 
     # PID 參數（可手動調整）
-    st.sidebar.subheader("📋 PID 參數（可手動調整）")
+    st.sidebar.subheader(" PID 參數（可手動調整）")
 
     kp = st.sidebar.number_input(
         "Kp (比例增益)",
@@ -152,7 +152,7 @@ def render_sidebar() -> dict:
     )
 
     # 進階設定
-    st.sidebar.subheader("🔧 進階設定")
+    st.sidebar.subheader(" 進階設定")
 
     deadband = st.sidebar.number_input(
         "死區閾值",
@@ -252,7 +252,7 @@ def render_main_content(params: dict):
     st.markdown("---")
 
     # 開始回測按鈕
-    if st.button("🚀 開始回測", type="primary", use_container_width=True):
+    if st.button(" 開始回測", type="primary", use_container_width=True):
         run_backtest(params)
 
 
