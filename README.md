@@ -25,7 +25,7 @@ smart_pilot/
 │   ├── pd_controller.py          # PD 控制器（KF 速度驅動 D 項）✅
 │   ├── pid_controller.py          # 增量型 PID 控制器（舊版）
 │   ├── backtest_engine.py         # 回測引擎 ✅
-│   ├── benchmark.py               # 對照策略（Threshold/Yearly）✅
+│   ├── benchmark.py               # 對照策略 + 帕雷托前線掃描 ✅
 │   ├── portfolio.py               # 投資組合管理
 │   └── metrics.py                 # 績效指標計算 ✅
 ├── data/
@@ -361,45 +361,59 @@ result = quick_simulate(backtest_result, n_simulations=10000, random_seed=42)
 | **極端情況** | `best_case` | 最佳情況報酬 |
 | | `worst_case` | 最差情況報酬 |
 
-### 使用對照策略（Benchmark）
+### 使用對照策略與帕雷托前線（Benchmark v2.0）
 
 ```python
-from core.benchmark import run_threshold_rebalance, run_yearly_rebalance, calculate_tracking_error
-from data.data_loader import DataLoader
+import numpy as np
+from core.benchmark import run_bangbang, run_yearly, run_smart_pilot_single, scan_pareto_frontier
 
-# 載入資料
-loader = DataLoader()
-data = loader.load_and_process()
+# 準備資料（numpy array 格式）
+prices_stock = data["SPY"].values
+prices_bond = data["TLT"].values
+rets_stock = np.diff(prices_stock, prepend=prices_stock[0]) / np.maximum(prices_stock, 1e-10)
+rets_bond = np.diff(prices_bond, prepend=prices_bond[0]) / np.maximum(prices_bond, 1e-10)
+dates = data.index.tolist()
 
-# 執行門檻再平衡策略（偏離 5% 才交易）
-threshold_history = run_threshold_rebalance(
-    data=data,
-    initial_cash=1_000_000,
-    target_ratio=0.6,
-    threshold=0.05,
-    commission_rate=0.001
-)
+# Bang-Bang Control（門檻再平衡）
+bb_result = run_bangbang(prices_stock, prices_bond, rets_stock, rets_bond, dates,
+                         target_w=0.6, drift_tolerance=0.05, fee_rate=0.001)
 
-# 執行年度再平衡策略（每年初再平衡）
-yearly_history = run_yearly_rebalance(
-    data=data,
-    initial_cash=1_000_000,
-    target_ratio=0.6,
-    commission_rate=0.001
-)
+# Yearly Rebalance（年度再平衡）
+yr_result = run_yearly(prices_stock, prices_bond, rets_stock, rets_bond, dates,
+                       target_w=0.6, fee_rate=0.001)
 
-# 計算追蹤誤差
-rmse = calculate_tracking_error(threshold_history["ratio"], target_ratio=0.6)
-print(f"追蹤誤差 RMSE: {rmse:.2%}")
+# Smart Pilot 單次回測（KF + PD）
+sp_result = run_smart_pilot_single(prices_stock, prices_bond, rets_stock, rets_bond, dates,
+                                    target_w=0.6, fee_rate=0.001, kf_q=0.001, kp=0.3, kd=0.1,
+                                    real_threshold=0.02)
+
+# 帕雷托前線掃描
+pareto = scan_pareto_frontier(prices_stock, prices_bond, rets_stock, rets_bond, dates,
+                               target_w=0.6, fee_rate=0.001, kf_q=0.001, kp=0.3, kd=0.1)
 ```
 
-**對照策略：**
+**策略函數回傳格式（dict）：**
 
-| 策略 | 說明 |
+| 欄位 | 說明 |
 |------|------|
-| `run_threshold_rebalance()` | 門檻再平衡：偏離超過門檻才交易 |
-| `run_yearly_rebalance()` | 年度再平衡：每年第一個交易日再平衡 |
-| `calculate_tracking_error()` | 計算追蹤誤差 RMSE |
+| `nav_list` | 每日淨值（從 1.0 開始） |
+| `weights` | 每日股票權重（百分比） |
+| `trade_count` | 總交易次數 |
+| `turnover` | 總週轉率 |
+| `actions` | 每日交易動作 |
+| `metrics` | 績效指標（ann_return, volatility, sharpe, max_drawdown） |
+| `rmse` | 追蹤誤差 |
+| `cer` | CER 分數 = 0.1 / (RMSE * Cost) |
+
+**函數列表：**
+
+| 函數 | 說明 |
+|------|------|
+| `run_bangbang()` | Bang-Bang Control：偏離超過門檻才交易 |
+| `run_yearly()` | 年度再平衡：每年第一個交易日再平衡 |
+| `run_smart_pilot_single()` | 簡化版 Smart Pilot（KF + PD），用於掃描 |
+| `scan_pareto_frontier()` | 掃描不同閾值，生成帕雷托前線數據 |
+| `get_enhanced_metrics()` | 計算績效指標 |
 
 ### 使用 LogKalmanFilter 卡爾曼濾波器
 
