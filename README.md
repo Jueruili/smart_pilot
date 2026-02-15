@@ -1,6 +1,18 @@
 # Smart Pilot - 投資組合再平衡系統
 
-基於增量型 PID 控制理論的投資組合再平衡系統。
+基於 PD 控制器 + 卡爾曼濾波的投資組合再平衡系統。
+
+## 架構總覽（v2.0）
+
+```
+原始價格 → Log-KF 卡爾曼濾波（兩個通道）→ 乾淨速度信號
+                              ↓
+                誤差 = 目標權重 - 當前權重
+                              ↓
+                PD 控制器（用 KF 速度算 D 項）
+                              ↓
+                死區判斷 → 執行交易或不動
+```
 
 ## 專案結構
 
@@ -9,7 +21,9 @@ smart_pilot/
 ├── app.py                          # Streamlit 主程式 ✅
 ├── core/
 │   ├── __init__.py
-│   ├── pid_controller.py          # 增量型 PID 控制器 ✅
+│   ├── kalman_filter.py           # Log-Space 卡爾曼濾波器 ✅
+│   ├── pd_controller.py          # PD 控制器（KF 速度驅動 D 項）✅
+│   ├── pid_controller.py          # 增量型 PID 控制器（舊版）
 │   ├── backtest_engine.py         # 回測引擎 ✅
 │   ├── benchmark.py               # 對照策略（Threshold/Yearly）✅
 │   ├── portfolio.py               # 投資組合管理
@@ -387,7 +401,66 @@ print(f"追蹤誤差 RMSE: {rmse:.2%}")
 | `run_yearly_rebalance()` | 年度再平衡：每年第一個交易日再平衡 |
 | `calculate_tracking_error()` | 計算追蹤誤差 RMSE |
 
-### 使用 PID 控制器
+### 使用 LogKalmanFilter 卡爾曼濾波器
+
+```python
+import numpy as np
+from core.kalman_filter import LogKalmanFilter
+
+# 初始化（傳入初始 log 價格）
+kf_stock = LogKalmanFilter(initial_log_price=np.log(400.0), q=0.001, r=0.005)
+kf_bond = LogKalmanFilter(initial_log_price=np.log(100.0), q=0.001, r=0.005)
+
+# 每日更新
+for price in stock_prices:
+    kf_stock.predict()
+    kf_stock.update(np.log(price))
+    print(f"濾波價格: {kf_stock.filtered_price:.2f}")
+    print(f"速度: {kf_stock.velocity:.6f}")
+
+# 重置
+kf_stock.reset(initial_log_price=np.log(new_price))
+
+# 查看狀態
+print(kf_stock.get_state())
+```
+
+**LogKalmanFilter 參數：**
+
+| 參數 | 預設值 | 說明 |
+|------|--------|------|
+| `initial_log_price` | (必填) | 初始 log 價格 |
+| `q` | 0.001 | 過程雜訊，控制靈敏度 |
+| `r` | 0.005 | 觀測雜訊 |
+
+### 使用 PDController PD 控制器
+
+```python
+from core.pd_controller import PDController
+
+# 初始化
+pd = PDController(kp=0.3, kd=0.1)
+
+# 計算調整量（使用 KF 速度）
+error = target_weight - current_weight
+adjustment = pd.calculate(error, vel_stock=kf_stock.velocity, vel_bond=kf_bond.velocity)
+print(f"調整量: {adjustment:.4f}")
+
+# 動態調整參數
+pd.set_parameters(kp=0.5, kd=0.2)
+
+# 查看狀態
+print(pd.get_state())
+```
+
+**PDController 公式：**
+```
+P 項 = Kp * error
+D 項 = clip(Kd * (vel_stock - vel_bond), -0.15, 0.15)
+輸出 = clip(P + D, -0.2, 0.2)
+```
+
+### 使用 PID 控制器（舊版）
 
 ```python
 from core.pid_controller import IncrementalPID
@@ -442,7 +515,36 @@ pytest tests/ -v --cov=core --cov=data
 
 ## 核心概念
 
-### 增量型 PID 控制器
+### PD + 卡爾曼濾波架構（v2.0）
+
+**信號處理流程：**
+1. 原始價格取 log → Log-KF 濾波 → 輸出乾淨的 log 價格和速度
+2. 誤差 = 目標權重 - 當前權重
+3. PD 控制器：P 項用誤差，D 項用 KF 速度差（vel_stock - vel_bond）
+4. 死區判斷 → 執行交易或不動
+
+**PD 控制器公式：**
+```
+P = Kp * error
+D = clip(Kd * (vel_stock - vel_bond), -0.15, 0.15)
+u = clip(P + D, -0.2, 0.2)
+```
+
+**卡爾曼濾波器狀態模型：**
+```
+x(k) = F * x(k-1) + w    （慣性模型：log_price = 前一天 + 速度）
+z(k) = H * x(k) + v      （只能觀測價格）
+```
+
+### PD 參數建議
+
+| 參數 | 建議範圍 | 說明 |
+|------|----------|------|
+| Kp | 0.1 ~ 0.5 | 比例增益，控制響應速度 |
+| Kd | 0.05 ~ 0.3 | 微分增益，使用 KF 速度差 |
+| Q | 0.0001 ~ 10.0 | KF 過程雜訊，控制濾波靈敏度 |
+
+### 增量型 PID 控制器（舊版）
 
 公式：
 ```
@@ -457,14 +559,6 @@ pytest tests/ -v --cov=core --cov=data
 - `Ki`: 積分增益
 - `Kd`: 微分增益
 
-### 參數建議
-
-| 參數 | 建議範圍 | 說明 |
-|------|----------|------|
-| Kp | 0.1 ~ 1.0 | 響應速度，較大值響應更快 |
-| Ki | 0.01 ~ 0.5 | 消除穩態誤差 |
-| Kd | 0.01 ~ 0.2 | 抑制振盪，增加穩定性 |
-
 ## 開發進度
 
 - [x] Phase 1: 專案結構建立
@@ -472,11 +566,9 @@ pytest tests/ -v --cov=core --cov=data
   - [x] 資料載入模組 (`data/data_loader.py`)
   - [x] 績效指標計算 (`core/metrics.py`)
   - [x] 單元測試 (`tests/test_pid.py`, `tests/test_data_loader.py`, `tests/test_backtest_engine.py`)
-  - [ ] 投資組合管理框架
   - [x] 樣本外驗證模組 (`validation/out_of_sample.py`)
   - [x] 蒙地卡羅模擬模組 (`validation/monte_carlo.py`)
   - [x] 對照策略模組 (`core/benchmark.py`)
-  - [ ] 視覺化模組框架
 - [x] Phase 2: 回測引擎完整實作 (`core/backtest_engine.py`)
 - [x] Phase 3: Streamlit UI 開發 (`app.py`)
   - [x] PID 參數可編輯
@@ -484,7 +576,13 @@ pytest tests/ -v --cov=core --cov=data
   - [x] 蒙地卡羅模擬整合
   - [x] 樣本外測試整合
   - [x] 智慧診斷提示
-- [ ] Phase 4: 進階功能
+- [x] Phase 4: v2.0 架構重構（PD + 卡爾曼濾波）
+  - [x] Log-Space 卡爾曼濾波器 (`core/kalman_filter.py`)
+  - [x] PD 控制器（KF 速度驅動 D 項）(`core/pd_controller.py`)
+  - [ ] 回測引擎整合 KF + PD
+  - [ ] WFA 滾動窗口分析
+  - [ ] 敏感度分析（三維切片熱力圖）
+  - [ ] 帕雷托前線圖
 
 ## 授權
 
