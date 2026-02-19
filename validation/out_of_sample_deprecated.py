@@ -1,3 +1,7 @@
+# DEPRECATED: 此檔案已被新架構取代，保留供參考用
+# 取代者：core/pd_controller.py, core/optimizer.py
+# 棄用日期：2025-03
+
 """
 樣本外測試模組
 
