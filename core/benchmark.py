@@ -322,26 +322,35 @@ def scan_pareto_frontier(
     kf_q: float = 0.001,
     kp: float = 0.5,
     kd: float = 0.5,
+    deadband_values: List[float] = None,
     n_points: int = 30,
 ) -> dict:
     """
     掃描不同閾值，生成三個策略的 Pareto Frontier 數據。
 
-    Smart Pilot：掃描 deadband 從 0.001 到 0.10
+    Smart Pilot：掃描 deadband（可傳入自訂列表或用 n_points 自動產生）
     Bang-Bang：掃描 drift_tolerance 從 0.005 到 0.15
-    Yearly：只有一個點
+    Yearly：只有一個點（沒有門檻可調，所以只有一個結果）
+
+    Y 軸成本說明：
+    - cost：總交易成本（小數）= turnover * fee_rate
+    - ann_cost：年化成本 = cost / 回測年數（用於 Pareto 圖 Y 軸）
 
     Returns:
         {
-            "smart_pilot": [{"rmse": float, "cost": float, "deadband": float}, ...],
-            "bangbang": [{"rmse": float, "cost": float, "tolerance": float}, ...],
-            "yearly": {"rmse": float, "cost": float},
+            "smart_pilot": [{"rmse", "cost", "ann_cost", "deadband"}, ...],
+            "bangbang":    [{"rmse", "cost", "ann_cost", "tolerance"}, ...],
+            "yearly":      {"rmse", "cost", "ann_cost"},
         }
     """
+    n_years = len(dates) / 252.0
     results = {"smart_pilot": [], "bangbang": [], "yearly": None}
 
+    if deadband_values is None:
+        deadband_values = np.linspace(0.001, 0.10, n_points).tolist()
+
     # Smart Pilot
-    for deadband in np.linspace(0.001, 0.10, n_points):
+    for deadband in deadband_values:
         r = run_smart_pilot(
             rets_stock, rets_bond, prices_stock, prices_bond, dates,
             target_w=target_w, fee_rate=fee_rate,
@@ -350,6 +359,7 @@ def scan_pareto_frontier(
         results["smart_pilot"].append({
             "rmse": r["rmse"],
             "cost": r["cost"],
+            "ann_cost": r["cost"] / n_years,
             "deadband": float(deadband),
         })
 
@@ -362,11 +372,16 @@ def scan_pareto_frontier(
         results["bangbang"].append({
             "rmse": r["rmse"],
             "cost": r["cost"],
+            "ann_cost": r["cost"] / n_years,
             "tolerance": float(tolerance),
         })
 
     # Yearly（只有一個點）
     r = run_yearly(rets_stock, rets_bond, dates, target_w=target_w, fee_rate=fee_rate)
-    results["yearly"] = {"rmse": r["rmse"], "cost": r["cost"]}
+    results["yearly"] = {
+        "rmse": r["rmse"],
+        "cost": r["cost"],
+        "ann_cost": r["cost"] / n_years,
+    }
 
     return results

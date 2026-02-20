@@ -174,25 +174,26 @@ pareto = scan_pareto_frontier(rets_stock, rets_bond, prices_stock, prices_bond, 
 from core.optimizer import run_grid_search, find_best_from_grid, run_slsqp, compare_hypervolumes
 from core.benchmark import scan_pareto_frontier
 
-# 1. Grid Search
+# 1. Grid Search（每組 (Kp,Kd,Q) 掃描多個 deadband，計算超體積）
 grid_results = run_grid_search(
     rets_stock, rets_bond, prices_stock, prices_bond, dates,
-    target_w=0.6, fee_rate=0.003, deadband=0.0125,
-    kp_range=[0.1, 0.2, 0.3, 0.5, 0.7, 1.0],
-    kd_range=[0.1, 0.2, 0.3, 0.5, 0.7, 1.0],
+    target_w=0.6, fee_rate=0.003,
+    kp_range=[0.1, 0.3, 0.5, 0.7, 1.0],
+    kd_range=[0.1, 0.3, 0.5, 0.7, 1.0],
     q_values=[0.0001, 0.001, 0.01],
+    deadband_values=[0.01, 0.025, 0.05],
 )
-best = find_best_from_grid(grid_results)
+best = find_best_from_grid(grid_results)  # 超體積最大
+print(f"最佳: Kp={best['kp']}, Kd={best['kd']}, Q={best['q']}, HV={best['hypervolume']:.6f}")
 
-# 2. SLSQP 精確最佳化
-opt = run_slsqp(
+# 2. SLSQP（對每個 deadband 分別最佳化 Kp,Kd,Q）
+slsqp_results = run_slsqp(
     rets_stock, rets_bond, prices_stock, prices_bond, dates,
-    target_w=0.6, fee_rate=0.003, deadband=0.0125,
-    cost_limit=yr["cost"],  # 用 Yearly 的成本作為上限
-    initial_params=best,
+    initial_params={"kp": best["kp"], "kd": best["kd"], "q": best["q"]},
+    deadband_values=[0.01, 0.025, 0.05],
 )
-print(f"最佳 Kp={opt['kp']:.3f}, Kd={opt['kd']:.3f}, Q={opt['q']:.5f}")
-print(f"RMSE={opt['rmse']:.4f}, Cost={opt['cost']:.4f}")
+for r in slsqp_results:
+    print(f"  db={r['deadband']:.3f}: RMSE={r['rmse']:.4f}, AnnCost={r['ann_cost']:.4f}")
 
 # 3. 超體積比較
 pareto = scan_pareto_frontier(rets_stock, rets_bond, prices_stock, prices_bond, dates)
@@ -258,9 +259,9 @@ z(k) = H * x(k) + v      （只能觀測價格）
 
 ### 最佳化流程
 
-1. **Grid Search**：掃描 (Kp, Kd) 網格，對每個 Q 切片執行（joblib 平行化）
-2. **SLSQP**：從 Grid Search 最佳點出發，精確最佳化（Q 用 log scale）
-3. **約束條件**：Cost ≤ cost_limit（建議用 Yearly 的 cost 作為基準）
+1. **Grid Search**：每組 (Kp, Kd, Q) 掃描多個 deadband，計算超體積作為評分（joblib 平行化）
+2. **SLSQP**：對每個 deadband 分別最佳化 (Kp, Kd, Q)，Q 用 log scale
+3. **超體積**：面積越大 → 策略在 RMSE-Cost 空間支配越多 → 參數越好
 
 ### 超體積指標
 
