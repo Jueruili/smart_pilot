@@ -8,7 +8,7 @@ Smart Pilot 核心模組
 - 績效指標計算
 """
 
-from core.pid_controller import IncrementalPID
+# from core.pid_controller import IncrementalPID
 
 __all__ = [
     "IncrementalPID",

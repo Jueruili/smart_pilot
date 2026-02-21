@@ -22,8 +22,8 @@ import yfinance as yf
 
 # 預設參數
 DEFAULT_TICKERS: list[str] = ["VTI", "BND"]
-DEFAULT_START_DATE: str = "2013-01-01"
-DEFAULT_END_DATE: str = "2025-12-31"
+DEFAULT_START_DATE: str = "2019-01-01"
+DEFAULT_END_DATE: str = "2024-01-01"
 
 
 class DataLoader:

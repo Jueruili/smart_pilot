@@ -1,0 +1,169 @@
+{
+  "results": [
+    {
+      "deadband": 0.005,
+      "kp": 1.1067351365119102,
+      "kd": 0.010580904891369414,
+      "q": 0.0009983714668837088,
+      "rmse": 0.003369106704064342,
+      "cost": 0.008583183208080448,
+      "ann_cost": 0.0007816993742089892,
+      "success": true,
+      "message": "Optimization terminated successfully"
+    },
+    {
+      "deadband": 0.011785714285714285,
+      "kp": 1.3118227518962857,
+      "kd": 0.01037906841182831,
+      "q": 0.000999205488586973,
+      "rmse": 0.0049738420843864276,
+      "cost": 0.006889122360335529,
+      "ann_cost": 0.0006274155528747935,
+      "success": true,
+      "message": "Optimization terminated successfully"
+    },
+    {
+      "deadband": 0.018571428571428572,
+      "kp": 1.3694747809874508,
+      "kd": 0.07799238182512239,
+      "q": 0.0010004235489961127,
+      "rmse": 0.006532543172860586,
+      "cost": 0.005455684529091362,
+      "ann_cost": 0.0004968675465598204,
+      "success": true,
+      "message": "Optimization terminated successfully"
+    },
+    {
+      "deadband": 0.02535714285714286,
+      "kp": 0.1,
+      "kd": 0.1,
+      "q": 0.0010000000000000002,
+      "rmse": 0.13501401553611933,
+      "cost": 0.0,
+      "ann_cost": 0.0,
+      "success": true,
+      "message": "Optimization terminated successfully"
+    },
+    {
+      "deadband": 0.03214285714285714,
+      "kp": 0.1,
+      "kd": 0.1,
+      "q": 0.0010000000000000002,
+      "rmse": 0.13501401553611933,
+      "cost": 0.0,
+      "ann_cost": 0.0,
+      "success": true,
+      "message": "Optimization terminated successfully"
+    },
+    {
+      "deadband": 0.038928571428571423,
+      "kp": 0.1,
+      "kd": 0.1,
+      "q": 0.0010000000000000002,
+      "rmse": 0.13501401553611933,
+      "cost": 0.0,
+      "ann_cost": 0.0,
+      "success": true,
+      "message": "Optimization terminated successfully"
+    },
+    {
+      "deadband": 0.045714285714285714,
+      "kp": 0.1,
+      "kd": 0.1,
+      "q": 0.0010000000000000002,
+      "rmse": 0.13501401553611933,
+      "cost": 0.0,
+      "ann_cost": 0.0,
+      "success": true,
+      "message": "Optimization terminated successfully"
+    },
+    {
+      "deadband": 0.0525,
+      "kp": 0.1,
+      "kd": 0.1,
+      "q": 0.0010000000000000002,
+      "rmse": 0.13501401553611933,
+      "cost": 0.0,
+      "ann_cost": 0.0,
+      "success": true,
+      "message": "Optimization terminated successfully"
+    },
+    {
+      "deadband": 0.05928571428571428,
+      "kp": 0.1,
+      "kd": 0.1,
+      "q": 0.0010000000000000002,
+      "rmse": 0.13501401553611933,
+      "cost": 0.0,
+      "ann_cost": 0.0,
+      "success": true,
+      "message": "Optimization terminated successfully"
+    },
+    {
+      "deadband": 0.06607142857142857,
+      "kp": 0.1,
+      "kd": 0.1,
+      "q": 0.0010000000000000002,
+      "rmse": 0.13501401553611933,
+      "cost": 0.0,
+      "ann_cost": 0.0,
+      "success": true,
+      "message": "Optimization terminated successfully"
+    },
+    {
+      "deadband": 0.07285714285714286,
+      "kp": 0.1,
+      "kd": 0.1,
+      "q": 0.0010000000000000002,
+      "rmse": 0.13501401553611933,
+      "cost": 0.0,
+      "ann_cost": 0.0,
+      "success": true,
+      "message": "Optimization terminated successfully"
+    },
+    {
+      "deadband": 0.07964285714285714,
+      "kp": 0.1,
+      "kd": 0.1,
+      "q": 0.0010000000000000002,
+      "rmse": 0.13501401553611933,
+      "cost": 0.0,
+      "ann_cost": 0.0,
+      "success": true,
+      "message": "Optimization terminated successfully"
+    },
+    {
+      "deadband": 0.08642857142857144,
+      "kp": 0.1,
+      "kd": 0.1,
+      "q": 0.0010000000000000002,
+      "rmse": 0.13501401553611933,
+      "cost": 0.0,
+      "ann_cost": 0.0,
+      "success": true,
+      "message": "Optimization terminated successfully"
+    },
+    {
+      "deadband": 0.09321428571428572,
+      "kp": 0.1,
+      "kd": 0.1,
+      "q": 0.0010000000000000002,
+      "rmse": 0.13501401553611933,
+      "cost": 0.0,
+      "ann_cost": 0.0,
+      "success": true,
+      "message": "Optimization terminated successfully"
+    },
+    {
+      "deadband": 0.1,
+      "kp": 0.1,
+      "kd": 0.1,
+      "q": 0.0010000000000000002,
+      "rmse": 0.13501401553611933,
+      "cost": 0.0,
+      "ann_cost": 0.0,
+      "success": true,
+      "message": "Optimization terminated successfully"
+    }
+  ]
+}
