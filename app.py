@@ -192,6 +192,24 @@ def render_sidebar() -> dict:
     )
 
     # =========================================================================
+    # 區塊 3.5：參考點設定
+    # =========================================================================
+    st.sidebar.header("📐 參考點設定")
+    st.sidebar.markdown(
+        "超體積參考點 = Bang-Bang 最差點 × 倍數\n"
+        "倍數越大 → 面積越大，倍數越小 → 比較更嚴格"
+    )
+    ref_multiplier = st.sidebar.number_input(
+        "參考點倍數",
+        min_value=0.5,
+        max_value=3.0,
+        value=1.1,
+        step=0.1,
+        format="%.1f",
+        help="預設 1.1，調小（如 0.8）讓比較更嚴格，調大讓差距更明顯"
+    )
+
+    # =========================================================================
     # 區塊 4：執行計算
     # =========================================================================
     st.sidebar.header("🚀 執行計算")
@@ -394,6 +412,7 @@ def render_sidebar() -> dict:
         "deadband_values": np.linspace(db_min, db_max, int(db_points)).tolist(),
         "n_jobs": n_jobs,
         "slsqp_q0": slsqp_q0,
+        "ref_multiplier": ref_multiplier,
     }
 
 
@@ -433,8 +452,26 @@ def render_tab_pareto(params: dict, data: pd.DataFrame):
             n_points=30,
         )
 
-    # 計算超體積
-    hv_comparison = compare_hypervolumes(pareto)
+    # 計算超體積（使用 ref_multiplier）
+    all_pts = pareto["smart_pilot"] + pareto["bangbang"] + [pareto["yearly"]]
+    ref_rmse = max(p["rmse"] for p in all_pts) * params["ref_multiplier"]
+    ref_cost = max(p["ann_cost"] for p in all_pts) * params["ref_multiplier"]
+    reference_point = {"rmse": ref_rmse, "cost": ref_cost}
+
+    hv_sp = calc_hypervolume(pareto["smart_pilot"], reference_point)
+    hv_bb = calc_hypervolume(pareto["bangbang"], reference_point)
+    hv_yr = calc_hypervolume([pareto["yearly"]], reference_point)
+
+    # 決定贏家
+    hv_values = {"smart_pilot": hv_sp, "bangbang": hv_bb, "yearly": hv_yr}
+    winner = max(hv_values, key=hv_values.get)
+    hv_comparison = {
+        "smart_pilot": hv_sp,
+        "bangbang": hv_bb,
+        "yearly": hv_yr,
+        "winner": winner,
+        "reference_point": reference_point,
+    }
 
     # 繪製 Pareto 圖
     fig = go.Figure()
@@ -500,6 +537,11 @@ def render_tab_pareto(params: dict, data: pd.DataFrame):
     else:
         st.info(f"Winner: Yearly")
 
+    st.caption(
+        f"參考點倍數：{params['ref_multiplier']}x | "
+        f"參考點：RMSE={ref_rmse:.5f}，Cost={ref_cost:.6f}"
+    )
+
     # 當前參數回測結果
     st.markdown("---")
     st.subheader("當前參數回測結果")
@@ -546,7 +588,7 @@ def render_tab_pareto(params: dict, data: pd.DataFrame):
 # =============================================================================
 # Tab 2: Heatmap
 # =============================================================================
-def render_tab_heatmap(params: dict):
+def render_tab_heatmap(params: dict, data: pd.DataFrame):
     """渲染參數空間熱力圖分頁"""
     st.header("Heatmap - 參數空間")
 
@@ -655,6 +697,129 @@ def render_tab_heatmap(params: dict):
         )
     else:
         st.info("尚未計算 SLSQP，請在側邊欄執行 SLSQP 最佳化。")
+
+    # =========================================================================
+    # 單點快速測試
+    # =========================================================================
+    st.markdown("---")
+    with st.expander("🧪 單點快速測試", expanded=False):
+        st.markdown("輸入一組參數，快速計算這組參數的超體積和回測指標。")
+        st.markdown(
+            f"目前參考點倍數：**{params['ref_multiplier']}x** "
+            "（可在左側側邊欄「參考點設定」調整）"
+        )
+
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            test_kp = st.number_input(
+                "Kp", min_value=0.01, max_value=2.0,
+                value=0.5, step=0.1, format="%.2f", key="test_kp"
+            )
+        with col2:
+            test_kd = st.number_input(
+                "Kd", min_value=0.01, max_value=2.0,
+                value=0.5, step=0.1, format="%.2f", key="test_kd"
+            )
+        with col3:
+            test_q = st.number_input(
+                "Q", min_value=0.00001, max_value=1.0,
+                value=0.001, step=0.0001, format="%.5f", key="test_q"
+            )
+        with col4:
+            test_deadband = st.number_input(
+                "Deadband", min_value=0.001, max_value=0.10,
+                value=0.0125, step=0.005, format="%.4f", key="test_deadband"
+            )
+
+        if st.button("▶ 執行單點測試", key="btn_single_test"):
+            with st.spinner("計算中..."):
+                # 準備資料
+                prices_stock = data[params["ticker1"]].values
+                prices_bond = data[params["ticker2"]].values
+                dates = data.index.tolist()
+                rets_stock = np.diff(prices_stock) / prices_stock[:-1]
+                rets_bond = np.diff(prices_bond) / prices_bond[:-1]
+                prices_stock = prices_stock[1:]
+                prices_bond = prices_bond[1:]
+                dates = dates[1:]
+
+                # 掃描 deadband 計算 Pareto frontier
+                pareto = scan_pareto_frontier(
+                    rets_stock, rets_bond, prices_stock, prices_bond, dates,
+                    target_w=params["target_w"],
+                    fee_rate=params["fee_rate"],
+                    kf_q=test_q,
+                    kf_r=params["kf_r"],
+                    kp=test_kp,
+                    kd=test_kd,
+                    n_points=15,
+                )
+
+                # 計算參考點（用 Bang-Bang 最差點 × ref_multiplier）
+                all_pts = pareto["smart_pilot"] + pareto["bangbang"]
+                ref_rmse = max(p["rmse"] for p in all_pts) * params["ref_multiplier"]
+                ref_cost = max(p["ann_cost"] for p in all_pts) * params["ref_multiplier"]
+                reference_point = {"rmse": ref_rmse, "cost": ref_cost}
+                hv = calc_hypervolume(pareto["smart_pilot"], reference_point)
+
+                # 用指定 deadband 跑完整回測
+                result = run_smart_pilot(
+                    rets_stock, rets_bond, prices_stock, prices_bond, dates,
+                    target_w=params["target_w"],
+                    fee_rate=params["fee_rate"],
+                    kf_q=test_q,
+                    kf_r=params["kf_r"],
+                    kp=test_kp,
+                    kd=test_kd,
+                    deadband=test_deadband,
+                    warmup=params["warmup"],
+                )
+                n_years = len(dates) / 252.0
+
+            # 顯示結果
+            st.markdown("**測試結果：**")
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("超體積", f"{hv:.6f}")
+            with col2:
+                st.metric("RMSE", f"{result['rmse'] * 100:.3f}%")
+            with col3:
+                st.metric("年化成本", f"{result['cost'] / n_years * 100:.4f}%")
+            with col4:
+                st.metric("交易次數", f"{result['trade_count']}")
+
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("年化報酬", f"{result['metrics']['ann_return_pct']:.2f}%")
+            with col2:
+                st.metric("Sharpe", f"{result['metrics']['sharpe']:.2f}")
+            with col3:
+                st.metric("最大回撤", f"{result['metrics']['max_drawdown'] * 100:.2f}%")
+
+            # 顯示使用的參考點數值
+            st.caption(
+                f"參考點：RMSE={ref_rmse:.5f}，Cost={ref_cost:.6f} "
+                f"（Bang-Bang 最差點 × {params['ref_multiplier']}）"
+            )
+
+            # 和 Grid Search 最佳結果比較
+            grid_cache = load_grid_cache()
+            if grid_cache is not None:
+                best = grid_cache["best"]
+                st.markdown("**與 Grid Search 最佳結果比較：**")
+                delta_hv = hv - best["hypervolume"]
+                if delta_hv >= 0:
+                    st.success(
+                        f"這組參數的超體積比 Grid Search 最佳結果高 {delta_hv:.6f} 🎉"
+                    )
+                else:
+                    st.info(
+                        f"Grid Search 最佳：Kp={best['kp']:.2f}, "
+                        f"Kd={best['kd']:.2f}, Q={best['q']:.5f}, "
+                        f"HV={best['hypervolume']:.6f}（差距 {abs(delta_hv):.6f}）"
+                    )
+            else:
+                st.caption("尚未執行 Grid Search，無法比較最佳結果")
 
 
 # =============================================================================
@@ -1021,7 +1186,7 @@ def main():
         render_tab_pareto(params, data)
 
     with tab2:
-        render_tab_heatmap(params)
+        render_tab_heatmap(params, data)
 
     with tab3:
         render_tab_rolling(params, data)
