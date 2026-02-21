@@ -220,6 +220,7 @@ def run_smart_pilot(
     target_w: float = 0.6,
     fee_rate: float = 0.003,
     kf_q: float = 0.001,
+    kf_r: float = 0.005,
     kp: float = 0.5,
     kd: float = 0.5,
     deadband: float = 0.0125,
@@ -238,8 +239,8 @@ def run_smart_pilot(
     n = len(rets_stock)
 
     # 初始化 KF（暖機）
-    kf_stock = LogKalmanFilter(np.log(prices_stock[0]), q=kf_q)
-    kf_bond = LogKalmanFilter(np.log(prices_bond[0]), q=kf_q)
+    kf_stock = LogKalmanFilter(np.log(prices_stock[0]), q=kf_q, r=kf_r)
+    kf_bond = LogKalmanFilter(np.log(prices_bond[0]), q=kf_q, r=kf_r)
     for i in range(warmup):
         kf_stock.predict()
         kf_stock.update(np.log(prices_stock[i]))
@@ -320,6 +321,7 @@ def scan_pareto_frontier(
     target_w: float = 0.6,
     fee_rate: float = 0.003,
     kf_q: float = 0.001,
+    kf_r: float = 0.005,
     kp: float = 0.5,
     kd: float = 0.5,
     deadband_values: List[float] = None,
@@ -354,7 +356,7 @@ def scan_pareto_frontier(
         r = run_smart_pilot(
             rets_stock, rets_bond, prices_stock, prices_bond, dates,
             target_w=target_w, fee_rate=fee_rate,
-            kf_q=kf_q, kp=kp, kd=kd, deadband=float(deadband)
+            kf_q=kf_q, kf_r=kf_r, kp=kp, kd=kd, deadband=float(deadband)
         )
         results["smart_pilot"].append({
             "rmse": r["rmse"],

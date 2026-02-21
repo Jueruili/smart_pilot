@@ -15,11 +15,14 @@ Streamlit 應用程式（v3.0）
 
 import json
 import os
+import time
 import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+from datetime import date
+from pathlib import Path
 
 from data.data_loader import DataLoader
 from core.benchmark import (
@@ -42,21 +45,6 @@ st.set_page_config(
 # 快取路徑
 GRID_CACHE_PATH = "data/cache/grid_search_results.json"
 SLSQP_CACHE_PATH = "data/cache/slsqp_results.json"
-
-# 預設參數
-DEFAULT_STOCK_TICKER = "VTI"
-DEFAULT_BOND_TICKER = "BND"
-DEFAULT_START_DATE = "2013-01-01"
-DEFAULT_END_DATE = "2025-12-31"
-DEFAULT_TARGET_W = 0.6
-DEFAULT_FEE_RATE = 0.003
-
-# 風險偏好對應的參數（v3.0 PD + KF）
-RISK_PROFILES = {
-    "保守": {"kf_q": 0.0001, "kp": 0.3, "kd": 0.1, "deadband": 0.05},
-    "穩健": {"kf_q": 0.001, "kp": 0.5, "kd": 0.3, "deadband": 0.025},
-    "積極": {"kf_q": 0.01, "kp": 0.8, "kd": 0.5, "deadband": 0.01},
-}
 
 
 # =============================================================================
@@ -93,102 +81,319 @@ def load_slsqp_cache() -> dict:
 # =============================================================================
 def render_sidebar() -> dict:
     """渲染側邊欄並返回參數"""
-    st.sidebar.header("參數設定")
 
-    # 資產配置
-    st.sidebar.subheader("資產配置")
-    target_ratio = st.sidebar.slider(
+    # =========================================================================
+    # 區塊 1：標的設定
+    # =========================================================================
+    st.sidebar.header("📈 標的設定")
+
+    ticker1 = st.sidebar.text_input("股票標的", value="VTI").upper().strip()
+    ticker2 = st.sidebar.text_input("債券標的", value="BND").upper().strip()
+
+    target_w = st.sidebar.slider(
         "目標股票比例",
-        min_value=0,
-        max_value=100,
-        value=60,
-        step=5,
-        format="%d%%",
-        help="股票在投資組合中的目標比例"
+        min_value=0.1,
+        max_value=0.9,
+        value=0.6,
+        step=0.05,
+        format="%.2f"
     )
 
-    # 風險偏好
-    st.sidebar.subheader("風險偏好")
-    risk_profile = st.sidebar.selectbox(
-        "選擇風險偏好",
-        options=list(RISK_PROFILES.keys()),
-        index=1,
-        help="風險偏好決定 KF + PD 參數"
-    )
-    default_params = RISK_PROFILES[risk_profile]
-
-    # KF + PD 參數（可手動調整）
-    st.sidebar.subheader("KF + PD 參數")
-
-    kf_q = st.sidebar.select_slider(
-        "KF Q (過程雜訊)",
-        options=[0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1],
-        value=default_params["kf_q"],
-        help="卡爾曼濾波器的過程雜訊協方差"
+    start_date = st.sidebar.date_input(
+        "回測開始日期",
+        value=date(2013, 1, 1)
     )
 
-    kp = st.sidebar.number_input(
-        "Kp (比例增益)",
-        min_value=0.0,
-        max_value=2.0,
-        value=default_params["kp"],
-        step=0.1,
-        format="%.2f",
-        help="PD 控制器的比例增益"
+    end_date = st.sidebar.date_input(
+        "回測結束日期",
+        value=date(2024, 1, 1)
     )
 
-    kd = st.sidebar.number_input(
-        "Kd (微分增益)",
-        min_value=0.0,
-        max_value=2.0,
-        value=default_params["kd"],
-        step=0.1,
-        format="%.2f",
-        help="PD 控制器的微分增益（使用 KF 速度）"
-    )
-
-    deadband = st.sidebar.number_input(
-        "Deadband (死區閾值)",
-        min_value=0.001,
-        max_value=0.10,
-        value=default_params["deadband"],
-        step=0.005,
-        format="%.3f",
-        help="控制量低於此閾值時不執行交易"
-    )
-
-    # 進階設定
-    st.sidebar.subheader("進階設定")
-    fee_rate = st.sidebar.slider(
+    fee_rate = st.sidebar.number_input(
         "手續費率",
-        min_value=0.0,
-        max_value=0.01,
-        value=DEFAULT_FEE_RATE,
-        step=0.0005,
-        format="%.4f",
-        help="每筆交易的手續費率"
+        value=0.003,
+        step=0.001,
+        format="%.3f"
     )
 
-    # 系統資訊
-    st.sidebar.markdown("---")
-    with st.sidebar.expander("系統資訊"):
-        st.write("**版本:** 3.0.0")
-        st.write("**架構:** PD + Log-KF")
-        st.write("**資料來源:** Yahoo Finance")
-        st.write(f"**股票標的:** {DEFAULT_STOCK_TICKER}")
-        st.write(f"**債券標的:** {DEFAULT_BOND_TICKER}")
-        st.write(f"**資料期間:** {DEFAULT_START_DATE} ~ {DEFAULT_END_DATE}")
+    # =========================================================================
+    # 區塊 2：Grid Search 參數範圍
+    # =========================================================================
+    st.sidebar.header("⚙️ Grid Search 參數範圍")
 
+    # Kp 設定
+    col1, col2, col3 = st.sidebar.columns(3)
+    with col1:
+        kp_min = st.number_input("Kp 最小值", value=0.1, step=0.1, format="%.1f")
+    with col2:
+        kp_max = st.number_input("Kp 最大值", value=1.0, step=0.1, format="%.1f")
+    with col3:
+        kp_points = st.number_input("Kp 點數", value=10, min_value=3, step=1)
+
+    # Kd 設定
+    col1, col2, col3 = st.sidebar.columns(3)
+    with col1:
+        kd_min = st.number_input("Kd 最小值", value=0.1, step=0.1, format="%.1f")
+    with col2:
+        kd_max = st.number_input("Kd 最大值", value=1.0, step=0.1, format="%.1f")
+    with col3:
+        kd_points = st.number_input("Kd 點數", value=10, min_value=3, step=1)
+
+    # Q 候選值
+    q_input = st.sidebar.text_input(
+        "Q 候選值（逗號分隔）",
+        value="0.0001, 0.001, 0.01"
+    )
+    try:
+        q_values = [float(x.strip()) for x in q_input.split(",")]
+    except ValueError:
+        st.sidebar.error("Q 候選值格式錯誤，請用逗號分隔數字")
+        q_values = [0.0001, 0.001, 0.01]
+
+    # Deadband 設定
+    col1, col2, col3 = st.sidebar.columns(3)
+    with col1:
+        db_min = st.number_input("Deadband 最小值", value=0.005, step=0.005, format="%.3f")
+    with col2:
+        db_max = st.number_input("Deadband 最大值", value=0.10, step=0.005, format="%.3f")
+    with col3:
+        db_points = st.number_input("Deadband 點數", value=15, min_value=3, step=1)
+
+    # =========================================================================
+    # 區塊 3：卡爾曼濾波器設定
+    # =========================================================================
+    st.sidebar.header("🔧 卡爾曼濾波器設定")
+
+    warmup = st.sidebar.number_input(
+        "暖機天數",
+        min_value=10,
+        max_value=100,
+        value=30,
+        step=1,
+        help="KF 初始化所需天數，建議 30 天"
+    )
+
+    kf_r = st.sidebar.number_input(
+        "R 值（觀測雜訊）",
+        value=0.005,
+        min_value=0.0001,
+        step=0.001,
+        format="%.4f",
+        help="R 越大越平滑但反應越慢，建議 0.001~0.01"
+    )
+
+    slsqp_q0 = st.sidebar.number_input(
+        "SLSQP 起點 Q",
+        value=0.001,
+        min_value=0.00001,
+        step=0.0001,
+        format="%.5f",
+        help="建議填入 Grid Search 找到的最佳 Q 值"
+    )
+
+    # =========================================================================
+    # 區塊 4：執行計算
+    # =========================================================================
+    st.sidebar.header("🚀 執行計算")
+
+    n_cores = os.cpu_count() or 1
+    st.sidebar.write(f"你的電腦有 {n_cores} 個核心")
+    n_jobs = st.sidebar.slider(
+        "使用核心數",
+        min_value=1,
+        max_value=n_cores,
+        value=max(1, n_cores - 1)
+    )
+
+    # 執行 Grid Search 按鈕
+    if st.sidebar.button("▶ 執行 Grid Search（約 2-5 分鐘）", type="primary"):
+        # 1. 先載入資料
+        with st.spinner("載入資料..."):
+            data = load_data(
+                tickers=[ticker1, ticker2],
+                start_date=str(start_date),
+                end_date=str(end_date)
+            )
+            prices_stock = data[ticker1].values
+            prices_bond = data[ticker2].values
+            dates = data.index.tolist()
+            rets_stock = np.diff(prices_stock) / prices_stock[:-1]
+            rets_bond = np.diff(prices_bond) / prices_bond[:-1]
+            prices_stock = prices_stock[1:]
+            prices_bond = prices_bond[1:]
+            dates = dates[1:]
+
+        # 2. 執行 Grid Search
+        t0 = time.time()
+        with st.spinner("正在執行 Grid Search，請稍候..."):
+            from core.optimizer import run_grid_search, find_best_from_grid
+            results = run_grid_search(
+                rets_stock, rets_bond, prices_stock, prices_bond, dates,
+                target_w=target_w,
+                fee_rate=fee_rate,
+                kp_range=np.linspace(kp_min, kp_max, int(kp_points)).tolist(),
+                kd_range=np.linspace(kd_min, kd_max, int(kd_points)).tolist(),
+                q_values=q_values,
+                deadband_values=np.linspace(db_min, db_max, int(db_points)).tolist(),
+                n_jobs=n_jobs,
+            )
+            best = find_best_from_grid(results)
+        elapsed = time.time() - t0
+
+        # 3. 儲存 JSON
+        cache_path = Path("data/cache/grid_search_results.json")
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(cache_path, "w", encoding="utf-8") as f:
+            json.dump({
+                "results": results,
+                "best": best,
+                "metadata": {
+                    "q_values": q_values,
+                    "kp_range": np.linspace(kp_min, kp_max, int(kp_points)).tolist(),
+                    "kd_range": np.linspace(kd_min, kd_max, int(kd_points)).tolist(),
+                    "deadband_values": np.linspace(db_min, db_max, int(db_points)).tolist(),
+                }
+            }, f, ensure_ascii=False, indent=2)
+
+        # 4. 清除舊快取讓 load_grid_cache() 重新讀取
+        load_grid_cache.clear()
+
+        # 5. 顯示結果
+        st.sidebar.success(
+            f"Grid Search 完成！共 {len(results)} 組，耗時 {elapsed:.1f} 秒\n"
+            f"最佳參數：Kp={best['kp']:.2f}, Kd={best['kd']:.2f}, "
+            f"Q={best['q']:.5f}, HV={best['hypervolume']:.6f}"
+        )
+
+    # 執行 SLSQP 按鈕
+    if st.sidebar.button("▶ 執行 SLSQP 最佳化（約 2-3 分鐘）"):
+        # 1. 檢查 Grid Search 結果是否存在
+        if not os.path.exists("data/cache/grid_search_results.json"):
+            st.sidebar.warning("請先執行 Grid Search")
+        else:
+            # 2. 讀取 Grid Search 最佳起點
+            with open("data/cache/grid_search_results.json", "r") as f:
+                grid_data = json.load(f)
+            best = grid_data["best"]
+            initial_params = {
+                "kp": best["kp"],
+                "kd": best["kd"],
+                "q": slsqp_q0,
+            }
+
+            # 3. 載入資料
+            with st.spinner("載入資料..."):
+                data = load_data(
+                    tickers=[ticker1, ticker2],
+                    start_date=str(start_date),
+                    end_date=str(end_date)
+                )
+                prices_stock = data[ticker1].values
+                prices_bond = data[ticker2].values
+                dates = data.index.tolist()
+                rets_stock = np.diff(prices_stock) / prices_stock[:-1]
+                rets_bond = np.diff(prices_bond) / prices_bond[:-1]
+                prices_stock = prices_stock[1:]
+                prices_bond = prices_bond[1:]
+                dates = dates[1:]
+
+            # 4. 執行 SLSQP
+            t0 = time.time()
+            with st.spinner("正在執行 SLSQP 最佳化，請稍候..."):
+                from core.optimizer import run_slsqp
+                slsqp_results = run_slsqp(
+                    rets_stock, rets_bond, prices_stock, prices_bond, dates,
+                    target_w=target_w,
+                    fee_rate=fee_rate,
+                    deadband_values=np.linspace(db_min, db_max, int(db_points)).tolist(),
+                    initial_params=initial_params,
+                )
+            elapsed = time.time() - t0
+
+            # 5. 儲存 JSON
+            cache_path = Path("data/cache/slsqp_results.json")
+            with open(cache_path, "w", encoding="utf-8") as f:
+                json.dump({"results": slsqp_results}, f, ensure_ascii=False, indent=2)
+
+            # 6. 清除快取
+            load_slsqp_cache.clear()
+            st.sidebar.success(f"SLSQP 完成！耗時 {elapsed:.1f} 秒")
+
+    # =========================================================================
+    # 區塊 5：快取管理
+    # =========================================================================
+    with st.sidebar.expander("🗂️ 快取管理", expanded=False):
+        st.write("**股票價格快取（CSV）**")
+        cache_dir = Path("data/cache")
+        csv_files = list(cache_dir.glob("*.csv")) if cache_dir.exists() else []
+        if csv_files:
+            csv_options = {
+                f.name + f" ({f.stat().st_size // 1024} KB)": f
+                for f in csv_files
+            }
+            selected_csvs = st.multiselect(
+                "選擇要刪除的 CSV",
+                options=list(csv_options.keys())
+            )
+            if st.button("刪除勾選的 CSV"):
+                for label in selected_csvs:
+                    csv_options[label].unlink()
+                st.success(f"已刪除 {len(selected_csvs)} 個快取檔案")
+                load_data.clear()
+        else:
+            st.write("無 CSV 快取")
+
+        st.write("**計算結果快取（JSON）**")
+        grid_path = Path("data/cache/grid_search_results.json")
+        if grid_path.exists():
+            size_kb = grid_path.stat().st_size // 1024
+            st.write(f"✅ grid_search_results.json（{size_kb} KB）")
+        else:
+            st.write("❌ grid_search_results.json（尚未計算）")
+
+        slsqp_path = Path("data/cache/slsqp_results.json")
+        if slsqp_path.exists():
+            size_kb = slsqp_path.stat().st_size // 1024
+            st.write(f"✅ slsqp_results.json（{size_kb} KB）")
+        else:
+            st.write("❌ slsqp_results.json（尚未計算）")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("刪除 Grid Search"):
+                if grid_path.exists():
+                    grid_path.unlink()
+                    load_grid_cache.clear()
+                    st.warning("已刪除，需重新執行 Grid Search")
+        with col2:
+            if st.button("刪除 SLSQP"):
+                if slsqp_path.exists():
+                    slsqp_path.unlink()
+                    load_slsqp_cache.clear()
+                    st.warning("已刪除，需重新執行 SLSQP")
+
+    # =========================================================================
+    # 回傳參數
+    # =========================================================================
     return {
-        "target_w": target_ratio / 100,
-        "risk_profile": risk_profile,
-        "kf_q": kf_q,
-        "kp": kp,
-        "kd": kd,
-        "deadband": deadband,
+        "ticker1": ticker1,
+        "ticker2": ticker2,
+        "target_w": target_w,
+        "start_date": start_date,
+        "end_date": end_date,
         "fee_rate": fee_rate,
-        "stock_ticker": DEFAULT_STOCK_TICKER,
-        "bond_ticker": DEFAULT_BOND_TICKER,
+        "kp": kp_min,
+        "kd": kd_min,
+        "kf_q": q_values[0] if q_values else 0.001,
+        "kf_r": kf_r,
+        "deadband": db_min,
+        "warmup": warmup,
+        "kp_range": np.linspace(kp_min, kp_max, int(kp_points)).tolist(),
+        "kd_range": np.linspace(kd_min, kd_max, int(kd_points)).tolist(),
+        "q_values": q_values,
+        "deadband_values": np.linspace(db_min, db_max, int(db_points)).tolist(),
+        "n_jobs": n_jobs,
+        "slsqp_q0": slsqp_q0,
     }
 
 
@@ -205,8 +410,8 @@ def render_tab_pareto(params: dict, data: pd.DataFrame):
     """)
 
     # 準備資料
-    prices_stock = data[params["stock_ticker"]].values
-    prices_bond = data[params["bond_ticker"]].values
+    prices_stock = data[params["ticker1"]].values
+    prices_bond = data[params["ticker2"]].values
     dates = data.index.tolist()
     n_years = len(dates) / 252.0
 
@@ -222,6 +427,7 @@ def render_tab_pareto(params: dict, data: pd.DataFrame):
             target_w=params["target_w"],
             fee_rate=params["fee_rate"],
             kf_q=params["kf_q"],
+            kf_r=params["kf_r"],
             kp=params["kp"],
             kd=params["kd"],
             n_points=30,
@@ -304,9 +510,11 @@ def render_tab_pareto(params: dict, data: pd.DataFrame):
             target_w=params["target_w"],
             fee_rate=params["fee_rate"],
             kf_q=params["kf_q"],
+            kf_r=params["kf_r"],
             kp=params["kp"],
             kd=params["kd"],
             deadband=params["deadband"],
+            warmup=params["warmup"],
         )
 
     col1, col2, col3, col4 = st.columns(4)
@@ -346,7 +554,7 @@ def render_tab_heatmap(params: dict):
 
     if grid_cache is None:
         st.warning("找不到 Grid Search 快取檔案。")
-        st.info("請執行 `python scripts/run_grid_search.py` 產生快取。")
+        st.info("請在側邊欄執行 Grid Search 產生快取。")
         return
 
     st.markdown("""
@@ -363,7 +571,7 @@ def render_tab_heatmap(params: dict):
     selected_q = st.selectbox(
         "選擇 Q 值切片",
         options=q_values,
-        index=1,
+        index=min(1, len(q_values) - 1),
         format_func=lambda x: f"Q = {x}"
     )
 
@@ -445,6 +653,8 @@ def render_tab_heatmap(params: dict):
             use_container_width=True,
             hide_index=True
         )
+    else:
+        st.info("尚未計算 SLSQP，請在側邊欄執行 SLSQP 最佳化。")
 
 
 # =============================================================================
@@ -481,8 +691,8 @@ def render_tab_rolling(params: dict, data: pd.DataFrame):
     window_days = window_years * 252
     step_days = step_months * 21
 
-    prices_stock = data[params["stock_ticker"]].values
-    prices_bond = data[params["bond_ticker"]].values
+    prices_stock = data[params["ticker1"]].values
+    prices_bond = data[params["ticker2"]].values
     dates = data.index.tolist()
 
     # 計算日報酬率
@@ -512,9 +722,11 @@ def render_tab_rolling(params: dict, data: pd.DataFrame):
                 target_w=params["target_w"],
                 fee_rate=params["fee_rate"],
                 kf_q=params["kf_q"],
+                kf_r=params["kf_r"],
                 kp=params["kp"],
                 kd=params["kd"],
                 deadband=params["deadband"],
+                warmup=params["warmup"],
             )
 
             rolling_results.append({
@@ -610,8 +822,8 @@ def render_tab_monte_carlo(params: dict, data: pd.DataFrame):
         )
 
     # 準備資料
-    prices_stock = data[params["stock_ticker"]].values
-    prices_bond = data[params["bond_ticker"]].values
+    prices_stock = data[params["ticker1"]].values
+    prices_bond = data[params["ticker2"]].values
     dates = data.index.tolist()
     n_days = len(dates)
 
@@ -620,13 +832,14 @@ def render_tab_monte_carlo(params: dict, data: pd.DataFrame):
     rets_bond = np.zeros(n_days)
     rets_bond[1:] = np.diff(prices_bond) / prices_bond[:-1]
 
+    warmup = params["warmup"]
+
     if st.button("執行蒙地卡羅模擬", type="primary"):
         with st.spinner(f"執行 {n_simulations} 次模擬..."):
             np.random.seed(random_seed)
 
             # Bootstrap 模擬
             final_returns = []
-            warmup = 30
 
             for _ in range(n_simulations):
                 # 隨機重組報酬率
@@ -652,6 +865,7 @@ def render_tab_monte_carlo(params: dict, data: pd.DataFrame):
                     target_w=params["target_w"],
                     fee_rate=params["fee_rate"],
                     kf_q=params["kf_q"],
+                    kf_r=params["kf_r"],
                     kp=params["kp"],
                     kd=params["kd"],
                     deadband=params["deadband"],
@@ -786,11 +1000,11 @@ def main():
     # 載入資料
     try:
         data = load_data(
-            tickers=[params["stock_ticker"], params["bond_ticker"]],
-            start_date=DEFAULT_START_DATE,
-            end_date=DEFAULT_END_DATE
+            tickers=[params["ticker1"], params["ticker2"]],
+            start_date=str(params["start_date"]),
+            end_date=str(params["end_date"])
         )
-        data = data[[params["stock_ticker"], params["bond_ticker"]]]
+        data = data[[params["ticker1"], params["ticker2"]]]
     except Exception as e:
         st.error(f"資料載入失敗：{str(e)}")
         return
