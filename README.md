@@ -23,21 +23,27 @@
 
 ```
 smart_pilot/
-├── app.py                          # Streamlit 主程式
+├── app.py                          # Streamlit 主程式（4 分頁）✅
 ├── core/
 │   ├── __init__.py
 │   ├── kalman_filter.py           # Log-Space 卡爾曼濾波器 ✅
-│   ├── pd_controller.py          # PD 控制器（KF 速度驅動 D 項）✅
+│   ├── pd_controller.py           # PD 控制器（KF 速度驅動 D 項）✅
 │   ├── backtest_engine.py         # 回測引擎（KF + PD）✅
 │   ├── benchmark.py               # 三策略回測 + 帕雷托前線掃描 ✅
 │   ├── optimizer.py               # Grid Search + SLSQP 最佳化 ✅
 │   ├── metrics.py                 # 績效指標計算 ✅
 │   ├── portfolio.py               # 投資組合管理
 │   └── pid_controller_deprecated.py  # 舊版 PID（已棄用）
+├── scripts/
+│   ├── run_grid_search.py         # Grid Search 預計算腳本 ✅
+│   └── run_slsqp.py               # SLSQP 精確最佳化腳本 ✅
 ├── data/
 │   ├── __init__.py
 │   ├── data_loader.py             # yfinance 資料下載 ✅
-│   └── cache/                     # 快取資料夾（CSV 格式）
+│   └── cache/                     # 快取資料夾（CSV + JSON）
+│       ├── *.csv                  # 價格資料快取
+│       ├── grid_search_results.json  # Grid Search 結果快取
+│       └── slsqp_results.json     # SLSQP 結果快取
 ├── validation/
 │   ├── __init__.py
 │   ├── monte_carlo.py             # 蒙地卡羅模擬 ✅
@@ -69,6 +75,33 @@ smart_pilot/
 ```bash
 pip install -r requirements.txt
 ```
+
+## 快速開始
+
+### 1. 預計算參數（建議首次執行）
+
+```bash
+# Grid Search（約 5-10 分鐘，使用 joblib 平行化）
+python scripts/run_grid_search.py
+
+# SLSQP 精確最佳化（約 2-5 分鐘）
+python scripts/run_slsqp.py
+```
+
+### 2. 啟動 Streamlit 應用
+
+```bash
+streamlit run app.py
+```
+
+### 3. 應用程式四個分頁
+
+| 分頁 | 功能 |
+|------|------|
+| Pareto Frontier | 三策略帕雷托前線對比，超體積指標比較 |
+| Heatmap | 參數空間熱力圖（需先執行 Grid Search） |
+| Rolling Window | 滾動窗口分析，評估策略穩定性 |
+| Monte Carlo | Bootstrap 蒙地卡羅模擬，風險分析 |
 
 ## 使用方式
 
@@ -285,8 +318,9 @@ z(k) = H * x(k) + v      （只能觀測價格）
   - [x] 三策略回測 + 帕雷托前線 (`core/benchmark.py`)
   - [x] Grid Search + SLSQP 最佳化 (`core/optimizer.py`)
   - [x] 超體積指標比較
-  - [ ] Streamlit UI 重構
-  - [ ] WFA 滾動窗口分析
+  - [x] Streamlit UI 重構（4 分頁：Pareto、Heatmap、Rolling、Monte Carlo）
+  - [x] 滾動窗口分析（Rolling Window Analysis）
+  - [x] 預計算腳本 (`scripts/run_grid_search.py`, `scripts/run_slsqp.py`)
   - [ ] 敏感度分析（三維切片熱力圖）
 
 ## 授權
