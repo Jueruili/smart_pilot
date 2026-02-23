@@ -14,13 +14,15 @@ from typing import Optional
 
 
 class PDController:
-    def __init__(self, kp: float, kd: float) -> None:
+    def __init__(self, kp: float, kd: float,
+                 d_clip: float = 0.15,
+                 output_clip: float = 0.2) -> None:
         if kp < 0 or kd < 0:
             raise ValueError(f"增益係數必須為非負數，收到：kp={kp}, kd={kd}")
         self.kp = kp
         self.kd = kd
-        self.d_clip = 0.15
-        self.output_clip = 0.2
+        self.d_clip = d_clip
+        self.output_clip = output_clip
 
     def calculate(self, error: float, vel_stock: float, vel_bond: float) -> float:
         p_term = self.kp * error

@@ -70,31 +70,84 @@ smart_pilot/
 | 權重格式 | 小數 | 0.6（非 60） |
 | RMSE / Cost | 小數 | 顯示時才乘以 100 |
 
-## 安裝
+## 快速上手
+
+### 前置作業
+
+**1. 安裝 Git**
+
+前往 https://git-scm.com/downloads 下載並安裝 Git。
+
+**2. 安裝 Python**
+
+前往 https://www.python.org/downloads/ 下載 Python 3.10 以上版本。
+安裝時勾選「Add Python to PATH」。
+
+**3. 下載專案**
+
+打開終端機（Windows 請用 PowerShell），輸入：
+
+```bash
+git clone https://github.com/你的帳號/smart_pilot.git
+cd smart_pilot/smart_pilot
+```
+
+### 安裝環境
+
+**4. 建立虛擬環境**
+
+```bash
+python -m venv venv
+```
+
+**5. 啟動虛擬環境**
+
+Windows：
+
+```powershell
+.\venv\Scripts\activate
+```
+
+如果出現紅字錯誤（執行原則不允許），請先輸入：
+
+```powershell
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+```
+
+再重新執行 `.\venv\Scripts\activate`
+
+Mac / Linux：
+
+```bash
+source venv/bin/activate
+```
+
+啟動成功後，終端機最左邊會出現 `(venv)` 字樣。
+
+**6. 安裝套件**
 
 ```bash
 pip install -r requirements.txt
 ```
 
-## 快速開始
+### 啟動系統
 
-### 1. 預計算參數（建議首次執行）
-
-```bash
-# Grid Search（約 5-10 分鐘，使用 joblib 平行化）
-python scripts/run_grid_search.py
-
-# SLSQP 精確最佳化（約 2-5 分鐘）
-python scripts/run_slsqp.py
-```
-
-### 2. 啟動 Streamlit 應用
+**7. 執行應用程式**
 
 ```bash
 streamlit run app.py
 ```
 
-### 3. 應用程式四個分頁
+瀏覽器會自動開啟，網址是 http://localhost:8501
+
+### 使用步驟
+
+1. 在左側側邊欄設定股票標的（預設 VTI + BND）
+2. 點擊「▶ 執行 Grid Search」產生熱力圖（約 2-5 分鐘）
+3. 點擊「▶ 執行 CMA-ES 全域最佳化」找最佳參數（約 5-10 分鐘）
+4. 查看四個分頁的分析結果
+
+### 應用程式四個分頁
 
 | 分頁 | 功能 |
 |------|------|

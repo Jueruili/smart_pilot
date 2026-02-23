@@ -24,16 +24,17 @@ from core.pd_controller import PDController
 # ── 共用函數 ──────────────────────────────────────────────
 
 
-def get_metrics(nav_list: list) -> dict:
+def get_metrics(nav_list: list, turnover: float = 0.0) -> dict:
     """
     計算年化績效指標。
     所有指標均年化，不使用總資金數字。
 
     Args:
         nav_list: 每日淨值列表，從 1.0 開始
+        turnover: 總週轉率（用於計算年化週轉率）
 
     Returns:
-        dict 包含年化報酬率、波動率、Sharpe、最大回撤
+        dict 包含年化報酬率、波動率、Sharpe、最大回撤、年化週轉率、年化資產波動率
     """
     wealth = np.array(nav_list, dtype=np.float64)
     rets = np.diff(wealth) / wealth[:-1]
@@ -44,7 +45,10 @@ def get_metrics(nav_list: list) -> dict:
             "ann_return": 0.0, "volatility": 0.0,
             "sharpe": 0.0, "max_drawdown": 0.0,
             "ann_return_pct": 0.0, "volatility_pct": 0.0,
+            "ann_turnover": 0.0, "ann_wealth_vol": 0.0,
         }
+
+    n_years = len(nav_list) / 252.0
 
     # 年化報酬率（複利公式）
     ann_ret = float((wealth[-1] ** (252.0 / n_days)) - 1.0)
@@ -55,6 +59,11 @@ def get_metrics(nav_list: list) -> dict:
     # 最大回撤
     peak = np.maximum.accumulate(wealth)
     mdd = float(np.min((wealth - peak) / peak))
+    # 年化週轉率
+    ann_turnover = turnover / n_years if n_years > 0 else 0.0
+    # 年化總資產波動率
+    wealth_rets = np.diff(wealth) / wealth[:-1]
+    ann_wealth_vol = float(np.std(wealth_rets) * np.sqrt(252))
 
     return {
         "ann_return": ann_ret,
@@ -63,6 +72,8 @@ def get_metrics(nav_list: list) -> dict:
         "max_drawdown": mdd,
         "ann_return_pct": ann_ret * 100.0,
         "volatility_pct": ann_vol * 100.0,
+        "ann_turnover": ann_turnover,
+        "ann_wealth_vol": ann_wealth_vol,
     }
 
 
@@ -140,7 +151,7 @@ def run_bangbang(
         "actions": actions,
         "rmse": rmse,
         "cost": cost,
-        "metrics": get_metrics(nav_list),
+        "metrics": get_metrics(nav_list, turnover=turnover),
     }
 
 
@@ -204,7 +215,7 @@ def run_yearly(
         "actions": actions,
         "rmse": rmse,
         "cost": cost,
-        "metrics": get_metrics(nav_list),
+        "metrics": get_metrics(nav_list, turnover=turnover),
     }
 
 
@@ -225,6 +236,8 @@ def run_smart_pilot(
     kd: float = 0.5,
     deadband: float = 0.0125,
     warmup: int = 30,
+    d_clip: float = 0.15,
+    output_clip: float = 0.2,
 ) -> dict:
     """
     Smart Pilot：PD 控制器 + Log-Space 卡爾曼濾波器。
@@ -247,7 +260,7 @@ def run_smart_pilot(
         kf_bond.predict()
         kf_bond.update(np.log(prices_bond[i]))
 
-    pd_ctrl = PDController(kp=kp, kd=kd)
+    pd_ctrl = PDController(kp=kp, kd=kd, d_clip=d_clip, output_clip=output_clip)
 
     wealth = 1.0
     p_stock = target_w
@@ -305,7 +318,7 @@ def run_smart_pilot(
         "actions": actions,
         "rmse": rmse,
         "cost": cost,
-        "metrics": get_metrics(nav_list),
+        "metrics": get_metrics(nav_list, turnover=turnover),
     }
 
 
@@ -326,6 +339,9 @@ def scan_pareto_frontier(
     kd: float = 0.5,
     deadband_values: List[float] = None,
     n_points: int = 30,
+    warmup: int = 30,
+    d_clip: float = 0.15,
+    output_clip: float = 0.2,
 ) -> dict:
     """
     掃描不同閾值，生成三個策略的 Pareto Frontier 數據。
@@ -356,7 +372,8 @@ def scan_pareto_frontier(
         r = run_smart_pilot(
             rets_stock, rets_bond, prices_stock, prices_bond, dates,
             target_w=target_w, fee_rate=fee_rate,
-            kf_q=kf_q, kf_r=kf_r, kp=kp, kd=kd, deadband=float(deadband)
+            kf_q=kf_q, kf_r=kf_r, kp=kp, kd=kd, deadband=float(deadband),
+            warmup=warmup, d_clip=d_clip, output_clip=output_clip,
         )
         results["smart_pilot"].append({
             "rmse": r["rmse"],
@@ -369,7 +386,8 @@ def scan_pareto_frontier(
     for tolerance in np.linspace(0.005, 0.15, n_points):
         r = run_bangbang(
             rets_stock, rets_bond, dates,
-            target_w=target_w, drift_tolerance=float(tolerance), fee_rate=fee_rate
+            target_w=target_w, drift_tolerance=float(tolerance), fee_rate=fee_rate,
+            warmup=warmup,
         )
         results["bangbang"].append({
             "rmse": r["rmse"],
@@ -379,7 +397,8 @@ def scan_pareto_frontier(
         })
 
     # Yearly（只有一個點）
-    r = run_yearly(rets_stock, rets_bond, dates, target_w=target_w, fee_rate=fee_rate)
+    r = run_yearly(rets_stock, rets_bond, dates, target_w=target_w, fee_rate=fee_rate,
+                   warmup=warmup)
     results["yearly"] = {
         "rmse": r["rmse"],
         "cost": r["cost"],

@@ -45,6 +45,7 @@ st.set_page_config(
 # 快取路徑
 GRID_CACHE_PATH = "data/cache/grid_search_results.json"
 SLSQP_CACHE_PATH = "data/cache/slsqp_results.json"
+CMA_ES_CACHE_PATH = "data/cache/cma_es_results.json"
 
 
 # =============================================================================
@@ -72,6 +73,15 @@ def load_slsqp_cache() -> dict:
     """載入 SLSQP 快取"""
     if os.path.exists(SLSQP_CACHE_PATH):
         with open(SLSQP_CACHE_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return None
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_cma_es_cache() -> dict:
+    """載入 CMA-ES 快取"""
+    if os.path.exists(CMA_ES_CACHE_PATH):
+        with open(CMA_ES_CACHE_PATH, "r", encoding="utf-8") as f:
             return json.load(f)
     return None
 
@@ -139,16 +149,19 @@ def render_sidebar() -> dict:
     with col3:
         kd_points = st.number_input("Kd 點數", value=10, min_value=3, step=1)
 
-    # Q 候選值
-    q_input = st.sidebar.text_input(
-        "Q 候選值（逗號分隔）",
-        value="0.0001, 0.001, 0.01"
-    )
-    try:
-        q_values = [float(x.strip()) for x in q_input.split(",")]
-    except ValueError:
-        st.sidebar.error("Q 候選值格式錯誤，請用逗號分隔數字")
-        q_values = [0.0001, 0.001, 0.01]
+    # Q 候選值（log scale）
+    col1, col2, col3 = st.sidebar.columns(3)
+    with col1:
+        q_min = st.number_input("Q 最小值", value=0.00001,
+                                 min_value=0.000001, format="%.5f")
+    with col2:
+        q_max = st.number_input("Q 最大值", value=0.1,
+                                 min_value=0.00001, format="%.4f")
+    with col3:
+        q_points = st.number_input("Q 點數", value=5, min_value=2, step=1)
+    q_values = np.logspace(
+        np.log10(q_min), np.log10(q_max), int(q_points)
+    ).tolist()
 
     # Deadband 設定
     col1, col2, col3 = st.sidebar.columns(3)
@@ -182,13 +195,22 @@ def render_sidebar() -> dict:
         help="R 越大越平滑但反應越慢，建議 0.001~0.01"
     )
 
-    slsqp_q0 = st.sidebar.number_input(
-        "SLSQP 起點 Q",
-        value=0.001,
-        min_value=0.00001,
-        step=0.0001,
-        format="%.5f",
-        help="建議填入 Grid Search 找到的最佳 Q 值"
+    d_clip = st.sidebar.number_input(
+        "D Clip",
+        value=0.15,
+        min_value=0.01,
+        step=0.01,
+        format="%.2f",
+        help="D 項裁切閾值，預設 0.15"
+    )
+
+    output_clip = st.sidebar.number_input(
+        "Output Clip",
+        value=0.2,
+        min_value=0.01,
+        step=0.01,
+        format="%.2f",
+        help="總輸出裁切閾值，預設 0.2"
     )
 
     # =========================================================================
@@ -254,6 +276,9 @@ def render_sidebar() -> dict:
                 q_values=q_values,
                 deadband_values=np.linspace(db_min, db_max, int(db_points)).tolist(),
                 n_jobs=n_jobs,
+                kf_r=kf_r,
+                warmup=warmup,
+                ref_multiplier=ref_multiplier,
             )
             best = find_best_from_grid(results)
         elapsed = time.time() - t0
@@ -280,62 +305,65 @@ def render_sidebar() -> dict:
         st.sidebar.success(
             f"Grid Search 完成！共 {len(results)} 組，耗時 {elapsed:.1f} 秒\n"
             f"最佳參數：Kp={best['kp']:.2f}, Kd={best['kd']:.2f}, "
-            f"Q={best['q']:.5f}, HV={best['hypervolume']:.6f}"
+            f"Q={best['q']:.5f}, HV={best['hypervolume'] * 10000:.4f} %%"
         )
 
-    # 執行 SLSQP 按鈕
-    if st.sidebar.button("▶ 執行 SLSQP 最佳化（約 2-3 分鐘）"):
-        # 1. 檢查 Grid Search 結果是否存在
-        if not os.path.exists("data/cache/grid_search_results.json"):
-            st.sidebar.warning("請先執行 Grid Search")
-        else:
-            # 2. 讀取 Grid Search 最佳起點
-            with open("data/cache/grid_search_results.json", "r") as f:
-                grid_data = json.load(f)
-            best = grid_data["best"]
-            initial_params = {
-                "kp": best["kp"],
-                "kd": best["kd"],
-                "q": slsqp_q0,
-            }
+    # 執行 CMA-ES 全域最佳化按鈕
+    if st.sidebar.button("▶ 執行 CMA-ES 全域最佳化（約 5-10 分鐘）", type="primary"):
+        # 1. 載入資料
+        with st.spinner("載入資料..."):
+            data = load_data(
+                tickers=[ticker1, ticker2],
+                start_date=str(start_date),
+                end_date=str(end_date)
+            )
+            prices_stock = data[ticker1].values
+            prices_bond = data[ticker2].values
+            dates = data.index.tolist()
+            rets_stock = np.diff(prices_stock) / prices_stock[:-1]
+            rets_bond = np.diff(prices_bond) / prices_bond[:-1]
+            prices_stock = prices_stock[1:]
+            prices_bond = prices_bond[1:]
+            dates = dates[1:]
 
-            # 3. 載入資料
-            with st.spinner("載入資料..."):
-                data = load_data(
-                    tickers=[ticker1, ticker2],
-                    start_date=str(start_date),
-                    end_date=str(end_date)
-                )
-                prices_stock = data[ticker1].values
-                prices_bond = data[ticker2].values
-                dates = data.index.tolist()
-                rets_stock = np.diff(prices_stock) / prices_stock[:-1]
-                rets_bond = np.diff(prices_bond) / prices_bond[:-1]
-                prices_stock = prices_stock[1:]
-                prices_bond = prices_bond[1:]
-                dates = dates[1:]
+        # 2. 執行 CMA-ES
+        t0 = time.time()
+        with st.spinner("正在執行 CMA-ES 全域最佳化，請稍候..."):
+            from core.optimizer import run_cma_es
+            cma_results = run_cma_es(
+                rets_stock, rets_bond, prices_stock, prices_bond, dates,
+                target_w=target_w,
+                fee_rate=fee_rate,
+                deadband_values=np.linspace(db_min, db_max, int(db_points)).tolist(),
+                kf_r=kf_r,
+                warmup=warmup,
+                ref_multiplier=ref_multiplier,
+            )
+        elapsed = time.time() - t0
 
-            # 4. 執行 SLSQP
-            t0 = time.time()
-            with st.spinner("正在執行 SLSQP 最佳化，請稍候..."):
-                from core.optimizer import run_slsqp
-                slsqp_results = run_slsqp(
-                    rets_stock, rets_bond, prices_stock, prices_bond, dates,
-                    target_w=target_w,
-                    fee_rate=fee_rate,
-                    deadband_values=np.linspace(db_min, db_max, int(db_points)).tolist(),
-                    initial_params=initial_params,
-                )
-            elapsed = time.time() - t0
+        # 3. 儲存 JSON（pareto 內含 list of dict，直接存）
+        cache_path = Path("data/cache/cma_es_results.json")
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        save_data = {
+            "kp": cma_results["kp"],
+            "kd": cma_results["kd"],
+            "q": cma_results["q"],
+            "hypervolume": cma_results["hypervolume"],
+            "hypervolume_pct": cma_results["hypervolume_pct"],
+            "iterations": cma_results["iterations"],
+            "evaluations": cma_results["evaluations"],
+            "success": cma_results["success"],
+        }
+        with open(cache_path, "w", encoding="utf-8") as f:
+            json.dump(save_data, f, ensure_ascii=False, indent=2)
 
-            # 5. 儲存 JSON
-            cache_path = Path("data/cache/slsqp_results.json")
-            with open(cache_path, "w", encoding="utf-8") as f:
-                json.dump({"results": slsqp_results}, f, ensure_ascii=False, indent=2)
-
-            # 6. 清除快取
-            load_slsqp_cache.clear()
-            st.sidebar.success(f"SLSQP 完成！耗時 {elapsed:.1f} 秒")
+        # 4. 清除快取
+        load_cma_es_cache.clear()
+        st.sidebar.success(
+            f"CMA-ES 完成！耗時 {elapsed:.1f} 秒\n"
+            f"最佳參數：Kp={cma_results['kp']:.2f}, Kd={cma_results['kd']:.2f}, "
+            f"Q={cma_results['q']:.5f}, HV={cma_results['hypervolume'] * 10000:.4f} %%"
+        )
 
     # =========================================================================
     # 區塊 5：快取管理
@@ -369,12 +397,12 @@ def render_sidebar() -> dict:
         else:
             st.write("❌ grid_search_results.json（尚未計算）")
 
-        slsqp_path = Path("data/cache/slsqp_results.json")
-        if slsqp_path.exists():
-            size_kb = slsqp_path.stat().st_size // 1024
-            st.write(f"✅ slsqp_results.json（{size_kb} KB）")
+        cma_path = Path("data/cache/cma_es_results.json")
+        if cma_path.exists():
+            size_kb = cma_path.stat().st_size // 1024
+            st.write(f"✅ cma_es_results.json（{size_kb} KB）")
         else:
-            st.write("❌ slsqp_results.json（尚未計算）")
+            st.write("❌ cma_es_results.json（尚未計算）")
 
         col1, col2 = st.columns(2)
         with col1:
@@ -384,11 +412,11 @@ def render_sidebar() -> dict:
                     load_grid_cache.clear()
                     st.warning("已刪除，需重新執行 Grid Search")
         with col2:
-            if st.button("刪除 SLSQP"):
-                if slsqp_path.exists():
-                    slsqp_path.unlink()
-                    load_slsqp_cache.clear()
-                    st.warning("已刪除，需重新執行 SLSQP")
+            if st.button("刪除 CMA-ES"):
+                if cma_path.exists():
+                    cma_path.unlink()
+                    load_cma_es_cache.clear()
+                    st.warning("已刪除，需重新執行 CMA-ES")
 
     # =========================================================================
     # 回傳參數
@@ -411,7 +439,8 @@ def render_sidebar() -> dict:
         "q_values": q_values,
         "deadband_values": np.linspace(db_min, db_max, int(db_points)).tolist(),
         "n_jobs": n_jobs,
-        "slsqp_q0": slsqp_q0,
+        "d_clip": d_clip,
+        "output_clip": output_clip,
         "ref_multiplier": ref_multiplier,
     }
 
@@ -450,6 +479,7 @@ def render_tab_pareto(params: dict, data: pd.DataFrame):
             kp=params["kp"],
             kd=params["kd"],
             n_points=30,
+            warmup=params["warmup"],
         )
 
     # 計算超體積（使用 ref_multiplier）
@@ -523,11 +553,11 @@ def render_tab_pareto(params: dict, data: pd.DataFrame):
     st.subheader("超體積指標 (Hypervolume)")
     col1, col2, col3 = st.columns(3)
     with col1:
-        st.metric("Smart Pilot", f"{hv_comparison['smart_pilot']:.6f}")
+        st.metric("Smart Pilot", f"{hv_comparison['smart_pilot'] * 10000:.4f} %%")
     with col2:
-        st.metric("Bang-Bang", f"{hv_comparison['bangbang']:.6f}")
+        st.metric("Bang-Bang", f"{hv_comparison['bangbang'] * 10000:.4f} %%")
     with col3:
-        st.metric("Yearly", f"{hv_comparison['yearly']:.6f}")
+        st.metric("Yearly", f"{hv_comparison['yearly'] * 10000:.4f} %%")
 
     winner = hv_comparison["winner"]
     if winner == "smart_pilot":
@@ -568,6 +598,12 @@ def render_tab_pareto(params: dict, data: pd.DataFrame):
         st.metric("RMSE", f"{sp_result['rmse'] * 100:.2f}%")
     with col4:
         st.metric("交易次數", f"{sp_result['trade_count']}")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("年化週轉率", f"{sp_result['metrics']['ann_turnover'] * 100:.2f}%")
+    with col2:
+        st.metric("年化資產波動", f"{sp_result['metrics']['ann_wealth_vol'] * 100:.2f}%")
 
     # 淨值曲線
     fig_nav = go.Figure()
@@ -632,15 +668,15 @@ def render_tab_heatmap(params: dict, data: pd.DataFrame):
     for r in q_results:
         i = kd_vals.index(r["kd"])
         j = kp_vals.index(r["kp"])
-        heatmap_data[i, j] = r["hypervolume"]
+        heatmap_data[i, j] = r["hypervolume"] * 10000
 
     fig = go.Figure(data=go.Heatmap(
         z=heatmap_data,
         x=[f"{kp:.2f}" for kp in kp_vals],
         y=[f"{kd:.2f}" for kd in kd_vals],
         colorscale="Viridis",
-        colorbar=dict(title="Hypervolume"),
-        hovertemplate="Kp: %{x}<br>Kd: %{y}<br>HV: %{z:.6f}<extra></extra>"
+        colorbar=dict(title="Hypervolume (%%)"),
+        hovertemplate="Kp: %{x}<br>Kd: %{y}<br>HV: %{z:.4f} %%<extra></extra>"
     ))
 
     # 標記最佳點
@@ -671,32 +707,25 @@ def render_tab_heatmap(params: dict, data: pd.DataFrame):
     with col3:
         st.metric("Q", f"{best['q']:.6f}")
     with col4:
-        st.metric("Hypervolume", f"{best['hypervolume']:.6f}")
+        st.metric("Hypervolume", f"{best['hypervolume'] * 10000:.4f} %%")
 
-    # SLSQP 結果
-    slsqp_cache = load_slsqp_cache()
-    if slsqp_cache is not None:
+    # CMA-ES 結果
+    cma_cache = load_cma_es_cache()
+    if cma_cache is not None:
         st.markdown("---")
-        st.subheader("SLSQP 精確最佳化結果")
+        st.subheader("CMA-ES 全域最佳化結果")
 
-        slsqp_results = slsqp_cache["results"]
-
-        # 表格
-        df = pd.DataFrame(slsqp_results)
-        df["deadband"] = df["deadband"].apply(lambda x: f"{x:.4f}")
-        df["kp"] = df["kp"].apply(lambda x: f"{x:.3f}")
-        df["kd"] = df["kd"].apply(lambda x: f"{x:.3f}")
-        df["q"] = df["q"].apply(lambda x: f"{x:.6f}")
-        df["rmse"] = df["rmse"].apply(lambda x: f"{x * 100:.3f}%")
-        df["ann_cost"] = df["ann_cost"].apply(lambda x: f"{x * 100:.4f}%")
-
-        st.dataframe(
-            df[["deadband", "kp", "kd", "q", "rmse", "ann_cost"]],
-            use_container_width=True,
-            hide_index=True
-        )
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Kp", f"{cma_cache['kp']:.3f}")
+        with col2:
+            st.metric("Kd", f"{cma_cache['kd']:.3f}")
+        with col3:
+            st.metric("Q", f"{cma_cache['q']:.6f}")
+        with col4:
+            st.metric("Hypervolume", f"{cma_cache['hypervolume'] * 10000:.4f} %%")
     else:
-        st.info("尚未計算 SLSQP，請在側邊欄執行 SLSQP 最佳化。")
+        st.info("尚未計算 CMA-ES，請在側邊欄執行 CMA-ES 全域最佳化。")
 
     # =========================================================================
     # 單點快速測試
@@ -753,6 +782,7 @@ def render_tab_heatmap(params: dict, data: pd.DataFrame):
                     kp=test_kp,
                     kd=test_kd,
                     n_points=15,
+                    warmup=params["warmup"],
                 )
 
                 # 計算參考點（用 Bang-Bang 最差點 × ref_multiplier）
@@ -780,7 +810,7 @@ def render_tab_heatmap(params: dict, data: pd.DataFrame):
             st.markdown("**測試結果：**")
             col1, col2, col3, col4 = st.columns(4)
             with col1:
-                st.metric("超體積", f"{hv:.6f}")
+                st.metric("超體積", f"{hv * 10000:.4f} %%")
             with col2:
                 st.metric("RMSE", f"{result['rmse'] * 100:.3f}%")
             with col3:
@@ -810,13 +840,13 @@ def render_tab_heatmap(params: dict, data: pd.DataFrame):
                 delta_hv = hv - best["hypervolume"]
                 if delta_hv >= 0:
                     st.success(
-                        f"這組參數的超體積比 Grid Search 最佳結果高 {delta_hv:.6f} 🎉"
+                        f"這組參數的超體積比 Grid Search 最佳結果高 {delta_hv * 10000:.4f} %%"
                     )
                 else:
                     st.info(
                         f"Grid Search 最佳：Kp={best['kp']:.2f}, "
                         f"Kd={best['kd']:.2f}, Q={best['q']:.5f}, "
-                        f"HV={best['hypervolume']:.6f}（差距 {abs(delta_hv):.6f}）"
+                        f"HV={best['hypervolume'] * 10000:.4f} %%（差距 {abs(delta_hv) * 10000:.4f} %%）"
                     )
             else:
                 st.caption("尚未執行 Grid Search，無法比較最佳結果")

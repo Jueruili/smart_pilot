@@ -27,6 +27,10 @@ def _single_grid_run(
     rets_stock, rets_bond, prices_stock, prices_bond,
     dates, target_w, fee_rate,
     deadband_values, reference_point,
+    kf_r: float = 0.005,
+    warmup: int = 30,
+    d_clip: float = 0.15,
+    output_clip: float = 0.2,
 ) -> dict:
     """
     單組 (Kp, Kd, Q) 的完整評估，供平行化使用。
@@ -42,8 +46,9 @@ def _single_grid_run(
     pareto = scan_pareto_frontier(
         rets_stock, rets_bond, prices_stock, prices_bond, dates,
         target_w=target_w, fee_rate=fee_rate,
-        kf_q=q, kp=kp, kd=kd,
+        kf_q=q, kf_r=kf_r, kp=kp, kd=kd,
         deadband_values=deadband_values,
+        warmup=warmup, d_clip=d_clip, output_clip=output_clip,
     )
 
     hv = calc_hypervolume(pareto["smart_pilot"], reference_point)
@@ -71,6 +76,11 @@ def run_grid_search(
     q_values: List[float] = None,
     deadband_values: List[float] = None,
     n_jobs: int = -1,
+    kf_r: float = 0.005,
+    warmup: int = 30,
+    d_clip: float = 0.15,
+    output_clip: float = 0.2,
+    ref_multiplier: float = 1.1,
 ) -> List[dict]:
     """
     Grid Search：掃描所有 (Kp, Kd, Q) 組合，每組計算超體積。
@@ -109,12 +119,13 @@ def run_grid_search(
     bb_frontier = []
     for tol in np.linspace(0.005, 0.15, 15):
         r = run_bangbang(rets_stock, rets_bond, dates,
-                         target_w=target_w, drift_tolerance=float(tol), fee_rate=fee_rate)
+                         target_w=target_w, drift_tolerance=float(tol), fee_rate=fee_rate,
+                         warmup=warmup)
         bb_frontier.append({"rmse": r["rmse"], "cost": r["cost"]})
 
     all_pts = bb_frontier
-    ref_rmse = max(p["rmse"] for p in all_pts) * 1.1
-    ref_cost = max(p["cost"] for p in all_pts) * 1.1
+    ref_rmse = max(p["rmse"] for p in all_pts) * ref_multiplier
+    ref_cost = max(p["cost"] for p in all_pts) * ref_multiplier
     reference_point = {"rmse": ref_rmse, "cost": ref_cost}
 
     tasks = [
@@ -130,6 +141,7 @@ def run_grid_search(
             rets_stock, rets_bond, prices_stock, prices_bond,
             dates, target_w, fee_rate,
             deadband_values, reference_point,
+            kf_r, warmup, d_clip, output_clip,
         )
         for kp, kd, q in tasks
     )
@@ -164,6 +176,10 @@ def run_slsqp(
     deadband_values: List[float] = None,
     initial_params: dict = None,
     reference_point: dict = None,
+    kf_r: float = 0.005,
+    warmup: int = 30,
+    d_clip: float = 0.15,
+    output_clip: float = 0.2,
 ) -> List[dict]:
     """
     SLSQP 精確最佳化。
@@ -212,7 +228,8 @@ def run_slsqp(
             r = _run_sp(
                 rets_stock, rets_bond, prices_stock, prices_bond, dates,
                 target_w=target_w, fee_rate=fee_rate,
-                kf_q=q, kp=kp, kd=kd, deadband=deadband
+                kf_q=q, kf_r=kf_r, kp=kp, kd=kd, deadband=deadband,
+                warmup=warmup, d_clip=d_clip, output_clip=output_clip,
             )
             return r["rmse"]  # 最小化追蹤誤差
 
@@ -236,7 +253,8 @@ def run_slsqp(
         final = _run_sp(
             rets_stock, rets_bond, prices_stock, prices_bond, dates,
             target_w=target_w, fee_rate=fee_rate,
-            kf_q=opt_q, kp=opt_kp, kd=opt_kd, deadband=deadband
+            kf_q=opt_q, kf_r=kf_r, kp=opt_kp, kd=opt_kd, deadband=deadband,
+            warmup=warmup, d_clip=d_clip, output_clip=output_clip,
         )
 
         all_results.append({
@@ -252,6 +270,124 @@ def run_slsqp(
         })
 
     return all_results
+
+
+# ─────────────────────────────────────────
+# CMA-ES 全域最佳化
+# ─────────────────────────────────────────
+
+
+def run_cma_es(
+    rets_stock: np.ndarray,
+    rets_bond: np.ndarray,
+    prices_stock: np.ndarray,
+    prices_bond: np.ndarray,
+    dates: list,
+    target_w: float = 0.6,
+    fee_rate: float = 0.003,
+    deadband_values: List[float] = None,
+    kf_r: float = 0.005,
+    warmup: int = 30,
+    d_clip: float = 0.15,
+    output_clip: float = 0.2,
+    ref_multiplier: float = 1.1,
+    x0: List[float] = None,
+    sigma0: float = 0.5,
+    maxiter: int = 100,
+    popsize: int = 10,
+) -> dict:
+    """
+    CMA-ES 全域最佳化。
+
+    最大化超體積（傳入負值給 CMA-ES 最小化）。
+    搜尋最佳 (Kp, Kd, Q) 參數組合。
+
+    Args:
+        x0: 起始點 [kp, kd, log_q]，預設 [2.0, 1.5, log(0.001)]
+        sigma0: 初始步長
+        maxiter: 最大迭代次數
+        popsize: 族群大小
+
+    Returns:
+        dict 包含最佳參數、超體積、Pareto frontier 等
+    """
+    import cma
+    from core.benchmark import scan_pareto_frontier, run_bangbang
+
+    if deadband_values is None:
+        deadband_values = np.linspace(0.005, 0.10, 15).tolist()
+
+    # 先算 Bang-Bang 參考點
+    bb_frontier = []
+    for tol in np.linspace(0.005, 0.15, 15):
+        r = run_bangbang(rets_stock, rets_bond, dates,
+                         target_w=target_w, drift_tolerance=float(tol), fee_rate=fee_rate,
+                         warmup=warmup)
+        bb_frontier.append({"rmse": r["rmse"], "cost": r["cost"]})
+
+    ref_rmse = max(p["rmse"] for p in bb_frontier) * ref_multiplier
+    ref_cost = max(p["cost"] for p in bb_frontier) * ref_multiplier
+    reference_point = {"rmse": ref_rmse, "cost": ref_cost}
+
+    def objective(params):
+        kp, kd, log_q = params
+        q = float(np.exp(np.clip(log_q, np.log(1e-5), np.log(1.0))))
+        kp = float(np.clip(kp, 0.01, 5.0))
+        kd = float(np.clip(kd, 0.01, 5.0))
+        pareto = scan_pareto_frontier(
+            rets_stock, rets_bond, prices_stock, prices_bond, dates,
+            target_w=target_w, fee_rate=fee_rate,
+            kf_q=q, kf_r=kf_r, kp=kp, kd=kd,
+            deadband_values=deadband_values,
+            warmup=warmup, d_clip=d_clip, output_clip=output_clip,
+        )
+        hv = calc_hypervolume(pareto["smart_pilot"], reference_point)
+        return -hv  # 最大化超體積 = 最小化負超體積
+
+    # 起點預設
+    if x0 is None:
+        x0 = [2.0, 1.5, np.log(0.001)]
+
+    # bounds
+    lower_bounds = [0.01, 0.01, np.log(1e-5)]
+    upper_bounds = [5.0, 5.0, np.log(1.0)]
+
+    opts = {
+        "maxiter": maxiter,
+        "popsize": popsize,
+        "bounds": [lower_bounds, upper_bounds],
+        "verbose": -9,  # 抑制輸出
+    }
+
+    es = cma.CMAEvolutionStrategy(x0, sigma0, opts)
+    es.optimize(objective)
+
+    best_params = es.result.xbest
+    opt_kp = float(np.clip(best_params[0], 0.01, 5.0))
+    opt_kd = float(np.clip(best_params[1], 0.01, 5.0))
+    opt_q = float(np.exp(np.clip(best_params[2], np.log(1e-5), np.log(1.0))))
+    best_hv = -es.result.fbest
+
+    # 用最佳參數跑一次完整 Pareto
+    pareto = scan_pareto_frontier(
+        rets_stock, rets_bond, prices_stock, prices_bond, dates,
+        target_w=target_w, fee_rate=fee_rate,
+        kf_q=opt_q, kf_r=kf_r, kp=opt_kp, kd=opt_kd,
+        deadband_values=deadband_values,
+        warmup=warmup, d_clip=d_clip, output_clip=output_clip,
+    )
+
+    return {
+        "kp": opt_kp,
+        "kd": opt_kd,
+        "q": opt_q,
+        "hypervolume": best_hv,
+        "hypervolume_pct": best_hv * 10000,
+        "pareto": pareto,
+        "iterations": es.result.iterations,
+        "evaluations": es.result.evaluations,
+        "success": True,
+    }
 
 
 # ─────────────────────────────────────────
@@ -293,13 +429,16 @@ def calc_hypervolume(
 
     # 2D 超體積：沿 RMSE 軸掃描，累加矩形面積
     hv = 0.0
-    prev_rmse = 0.0
-    for p in points:
-        width = p["rmse"] - prev_rmse
-        height = ref_cost - p["cost"]
-        if height > 0:
+    for i in range(len(points)):
+        current_p = points[i]
+        if i < len(points) - 1:
+            next_rmse = points[i + 1]["rmse"]
+        else:
+            next_rmse = ref_rmse
+        width = next_rmse - current_p["rmse"]
+        height = ref_cost - current_p["cost"]
+        if width > 0 and height > 0:
             hv += width * height
-        prev_rmse = p["rmse"]
 
     return float(hv)
 
