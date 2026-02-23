@@ -232,6 +232,47 @@ def render_sidebar() -> dict:
     )
 
     # =========================================================================
+    # 區塊 3.6：CMA-ES 設定
+    # =========================================================================
+    st.sidebar.header("🔍 CMA-ES 設定")
+
+    # Kp 上下限
+    col1, col2 = st.sidebar.columns(2)
+    with col1:
+        cma_kp_min = st.number_input("Kp 下限", value=kp_min,
+                                      min_value=0.001, format="%.3f")
+    with col2:
+        cma_kp_max = st.number_input("Kp 上限", value=2.0,
+                                      min_value=0.1, format="%.1f")
+
+    # Kd 上下限
+    col1, col2 = st.sidebar.columns(2)
+    with col1:
+        cma_kd_min = st.number_input("Kd 下限", value=kd_min,
+                                      min_value=0.001, format="%.3f")
+    with col2:
+        cma_kd_max = st.number_input("Kd 上限", value=2.0,
+                                      min_value=0.1, format="%.1f")
+
+    # Q 上下限
+    col1, col2 = st.sidebar.columns(2)
+    with col1:
+        cma_q_min = st.number_input("Q 下限", value=q_min,
+                                     min_value=0.000001, format="%.5f")
+    with col2:
+        cma_q_max = st.number_input("Q 上限", value=q_max,
+                                     min_value=0.00001, format="%.4f")
+
+    # 搜索設定
+    col1, col2 = st.sidebar.columns(2)
+    with col1:
+        cma_maxiter = st.number_input("最多幾輪", value=100,
+                                       min_value=10, step=10)
+    with col2:
+        cma_popsize = st.number_input("每輪幾個點", value=10,
+                                       min_value=5, step=5)
+
+    # =========================================================================
     # 區塊 4：執行計算
     # =========================================================================
     st.sidebar.header("🚀 執行計算")
@@ -308,7 +349,7 @@ def render_sidebar() -> dict:
             f"Q={best['q']:.5f}, HV={best['hypervolume'] * 10000:.4f} %%"
         )
 
-    # 執行 CMA-ES 全域最佳化按鈕
+    # 執行 CMA-ES 全域最佳化按鈕（雙起點）
     if st.sidebar.button("▶ 執行 CMA-ES 全域最佳化（約 5-10 分鐘）", type="primary"):
         # 1. 載入資料
         with st.spinner("載入資料..."):
@@ -326,11 +367,12 @@ def render_sidebar() -> dict:
             prices_bond = prices_bond[1:]
             dates = dates[1:]
 
-        # 2. 執行 CMA-ES
+        # 2. 執行 CMA-ES 雙起點
         t0 = time.time()
-        with st.spinner("正在執行 CMA-ES 全域最佳化，請稍候..."):
-            from core.optimizer import run_cma_es
-            cma_results = run_cma_es(
+        from core.optimizer import run_cma_es
+
+        with st.spinner("CMA-ES 第一輪搜索（從左下角出發）..."):
+            result1 = run_cma_es(
                 rets_stock, rets_bond, prices_stock, prices_bond, dates,
                 target_w=target_w,
                 fee_rate=fee_rate,
@@ -338,31 +380,78 @@ def render_sidebar() -> dict:
                 kf_r=kf_r,
                 warmup=warmup,
                 ref_multiplier=ref_multiplier,
+                kp_min=cma_kp_min,
+                kp_max=cma_kp_max,
+                kd_min=cma_kd_min,
+                kd_max=cma_kd_max,
+                q_min=cma_q_min,
+                q_max=cma_q_max,
+                x0=[cma_kp_min, cma_kd_min, np.log(cma_q_min)],
+                maxiter=int(cma_maxiter),
+                popsize=int(cma_popsize),
             )
+
+        with st.spinner("CMA-ES 第二輪搜索（從右上角出發）..."):
+            result2 = run_cma_es(
+                rets_stock, rets_bond, prices_stock, prices_bond, dates,
+                target_w=target_w,
+                fee_rate=fee_rate,
+                deadband_values=np.linspace(db_min, db_max, int(db_points)).tolist(),
+                kf_r=kf_r,
+                warmup=warmup,
+                ref_multiplier=ref_multiplier,
+                kp_min=cma_kp_min,
+                kp_max=cma_kp_max,
+                kd_min=cma_kd_min,
+                kd_max=cma_kd_max,
+                q_min=cma_q_min,
+                q_max=cma_q_max,
+                x0=[cma_kp_max, cma_kd_max, np.log(cma_q_max)],
+                maxiter=int(cma_maxiter),
+                popsize=int(cma_popsize),
+            )
+
         elapsed = time.time() - t0
 
-        # 3. 儲存 JSON（pareto 內含 list of dict，直接存）
+        # 取超體積較大的結果
+        best_result = result1 if result1["hypervolume"] > result2["hypervolume"] else result2
+
+        # 3. 儲存 JSON
         cache_path = Path("data/cache/cma_es_results.json")
         cache_path.parent.mkdir(parents=True, exist_ok=True)
-        save_data = {
-            "kp": cma_results["kp"],
-            "kd": cma_results["kd"],
-            "q": cma_results["q"],
-            "hypervolume": cma_results["hypervolume"],
-            "hypervolume_pct": cma_results["hypervolume_pct"],
-            "iterations": cma_results["iterations"],
-            "evaluations": cma_results["evaluations"],
-            "success": cma_results["success"],
-        }
         with open(cache_path, "w", encoding="utf-8") as f:
-            json.dump(save_data, f, ensure_ascii=False, indent=2)
+            json.dump({
+                "best": {
+                    "kp": best_result["kp"],
+                    "kd": best_result["kd"],
+                    "q": best_result["q"],
+                    "hypervolume": best_result["hypervolume"],
+                    "hypervolume_pct": best_result["hypervolume_pct"],
+                    "iterations": best_result["iterations"],
+                    "evaluations": best_result["evaluations"],
+                },
+                "result1": {
+                    "kp": result1["kp"], "kd": result1["kd"], "q": result1["q"],
+                    "hypervolume": result1["hypervolume"],
+                    "hypervolume_pct": result1["hypervolume_pct"],
+                },
+                "result2": {
+                    "kp": result2["kp"], "kd": result2["kd"], "q": result2["q"],
+                    "hypervolume": result2["hypervolume"],
+                    "hypervolume_pct": result2["hypervolume_pct"],
+                },
+            }, f, ensure_ascii=False, indent=2)
 
         # 4. 清除快取
         load_cma_es_cache.clear()
         st.sidebar.success(
             f"CMA-ES 完成！耗時 {elapsed:.1f} 秒\n"
-            f"最佳參數：Kp={cma_results['kp']:.2f}, Kd={cma_results['kd']:.2f}, "
-            f"Q={cma_results['q']:.5f}, HV={cma_results['hypervolume'] * 10000:.4f} %%"
+            f"第一輪：HV={result1['hypervolume_pct']:.4f} %%\n"
+            f"第二輪：HV={result2['hypervolume_pct']:.4f} %%\n"
+            f"最佳：Kp={best_result['kp']:.3f}, "
+            f"Kd={best_result['kd']:.3f}, "
+            f"Q={best_result['q']:.6f}, "
+            f"HV={best_result['hypervolume_pct']:.4f} %%"
         )
 
     # =========================================================================
@@ -442,6 +531,14 @@ def render_sidebar() -> dict:
         "d_clip": d_clip,
         "output_clip": output_clip,
         "ref_multiplier": ref_multiplier,
+        "cma_kp_min": cma_kp_min,
+        "cma_kp_max": cma_kp_max,
+        "cma_kd_min": cma_kd_min,
+        "cma_kd_max": cma_kd_max,
+        "cma_q_min": cma_q_min,
+        "cma_q_max": cma_q_max,
+        "cma_maxiter": cma_maxiter,
+        "cma_popsize": cma_popsize,
     }
 
 
@@ -715,15 +812,39 @@ def render_tab_heatmap(params: dict, data: pd.DataFrame):
         st.markdown("---")
         st.subheader("CMA-ES 全域最佳化結果")
 
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric("Kp", f"{cma_cache['kp']:.3f}")
-        with col2:
-            st.metric("Kd", f"{cma_cache['kd']:.3f}")
-        with col3:
-            st.metric("Q", f"{cma_cache['q']:.6f}")
-        with col4:
-            st.metric("Hypervolume", f"{cma_cache['hypervolume'] * 10000:.4f} %%")
+        # 支援新格式（best/result1/result2）和舊格式（直接存 kp/kd/q）
+        if "best" in cma_cache:
+            cma_best = cma_cache["best"]
+            r1 = cma_cache.get("result1", {})
+            r2 = cma_cache.get("result2", {})
+
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Kp", f"{cma_best['kp']:.3f}")
+            with col2:
+                st.metric("Kd", f"{cma_best['kd']:.3f}")
+            with col3:
+                st.metric("Q", f"{cma_best['q']:.6f}")
+            with col4:
+                st.metric("Hypervolume", f"{cma_best['hypervolume'] * 10000:.4f} %%")
+
+            # 顯示雙起點結果比較
+            if r1 and r2:
+                st.caption(
+                    f"第一輪（左下角出發）：HV={r1['hypervolume_pct']:.4f} %% | "
+                    f"第二輪（右上角出發）：HV={r2['hypervolume_pct']:.4f} %%"
+                )
+        else:
+            # 舊格式相容
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Kp", f"{cma_cache['kp']:.3f}")
+            with col2:
+                st.metric("Kd", f"{cma_cache['kd']:.3f}")
+            with col3:
+                st.metric("Q", f"{cma_cache['q']:.6f}")
+            with col4:
+                st.metric("Hypervolume", f"{cma_cache['hypervolume'] * 10000:.4f} %%")
     else:
         st.info("尚未計算 CMA-ES，請在側邊欄執行 CMA-ES 全域最佳化。")
 

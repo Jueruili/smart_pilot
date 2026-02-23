@@ -291,6 +291,12 @@ def run_cma_es(
     d_clip: float = 0.15,
     output_clip: float = 0.2,
     ref_multiplier: float = 1.1,
+    kp_min: float = 0.01,
+    kp_max: float = 5.0,
+    kd_min: float = 0.01,
+    kd_max: float = 5.0,
+    q_min: float = 1e-5,
+    q_max: float = 1.0,
     x0: List[float] = None,
     sigma0: float = 0.5,
     maxiter: int = 100,
@@ -331,9 +337,9 @@ def run_cma_es(
 
     def objective(params):
         kp, kd, log_q = params
-        q = float(np.exp(np.clip(log_q, np.log(1e-5), np.log(1.0))))
-        kp = float(np.clip(kp, 0.01, 5.0))
-        kd = float(np.clip(kd, 0.01, 5.0))
+        q = float(np.exp(np.clip(log_q, np.log(q_min), np.log(q_max))))
+        kp = float(np.clip(kp, kp_min, kp_max))
+        kd = float(np.clip(kd, kd_min, kd_max))
         pareto = scan_pareto_frontier(
             rets_stock, rets_bond, prices_stock, prices_bond, dates,
             target_w=target_w, fee_rate=fee_rate,
@@ -344,13 +350,13 @@ def run_cma_es(
         hv = calc_hypervolume(pareto["smart_pilot"], reference_point)
         return -hv  # 最大化超體積 = 最小化負超體積
 
-    # 起點預設
+    # 起點預設（中間值）
     if x0 is None:
-        x0 = [2.0, 1.5, np.log(0.001)]
+        x0 = [(kp_min + kp_max) / 2, (kd_min + kd_max) / 2, np.log(np.sqrt(q_min * q_max))]
 
     # bounds
-    lower_bounds = [0.01, 0.01, np.log(1e-5)]
-    upper_bounds = [5.0, 5.0, np.log(1.0)]
+    lower_bounds = [kp_min, kd_min, np.log(q_min)]
+    upper_bounds = [kp_max, kd_max, np.log(q_max)]
 
     opts = {
         "maxiter": maxiter,
@@ -363,9 +369,9 @@ def run_cma_es(
     es.optimize(objective)
 
     best_params = es.result.xbest
-    opt_kp = float(np.clip(best_params[0], 0.01, 5.0))
-    opt_kd = float(np.clip(best_params[1], 0.01, 5.0))
-    opt_q = float(np.exp(np.clip(best_params[2], np.log(1e-5), np.log(1.0))))
+    opt_kp = float(np.clip(best_params[0], kp_min, kp_max))
+    opt_kd = float(np.clip(best_params[1], kd_min, kd_max))
+    opt_q = float(np.exp(np.clip(best_params[2], np.log(q_min), np.log(q_max))))
     best_hv = -es.result.fbest
 
     # 用最佳參數跑一次完整 Pareto
