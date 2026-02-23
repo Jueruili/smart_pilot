@@ -89,18 +89,21 @@ smart_pilot/
 
 ```bash
 git clone https://github.com/你的帳號/smart_pilot.git
-cd smart_pilot/smart_pilot
+```
+**4. 到指定路徑**
+```bash
+cd ./smart_pilot/
 ```
 
 ### 安裝環境
 
-**4. 建立虛擬環境**
+**5. 建立虛擬環境**
 
 ```bash
 python -m venv venv
 ```
 
-**5. 啟動虛擬環境**
+**6. 啟動虛擬環境**
 
 Windows：
 
@@ -116,15 +119,9 @@ Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 
 再重新執行 `.\venv\Scripts\activate`
 
-Mac / Linux：
-
-```bash
-source venv/bin/activate
-```
-
 啟動成功後，終端機最左邊會出現 `(venv)` 字樣。
 
-**6. 安裝套件**
+**7. 安裝套件**
 
 ```bash
 pip install -r requirements.txt
@@ -132,13 +129,27 @@ pip install -r requirements.txt
 
 ### 啟動系統
 
-**7. 執行應用程式**
+**8. 執行應用程式**
 
 ```bash
 streamlit run app.py
 ```
 
 瀏覽器會自動開啟，網址是 http://localhost:8501
+
+### 已下載後快速進入
+**1. 到指定路徑**
+```bash
+cd ./smart_pilot/
+```
+**2. 啟動虛擬環境**
+```powershell
+.\venv\Scripts\activate
+```
+**3. 執行應用程式**
+```bash
+streamlit run app.py
+```
 
 ### 使用步驟
 
@@ -147,176 +158,6 @@ streamlit run app.py
 3. 點擊「▶ 執行 CMA-ES 全域最佳化」找最佳參數（約 5-10 分鐘）
 4. 查看四個分頁的分析結果
 
-### 應用程式四個分頁
-
-| 分頁 | 功能 |
-|------|------|
-| Pareto Frontier | 三策略帕雷托前線對比，超體積指標比較 |
-| Heatmap | 參數空間熱力圖（需先執行 Grid Search） |
-| Rolling Window | 滾動窗口分析，評估策略穩定性 |
-| Monte Carlo | Bootstrap 蒙地卡羅模擬，風險分析 |
-
-## 使用方式
-
-### 使用 BacktestEngine 執行回測（v3.0）
-
-```python
-from data.data_loader import DataLoader
-from core.backtest_engine import BacktestEngine
-
-# 載入資料
-loader = DataLoader()
-data = loader.load_and_process(["VTI", "BND"], "2013-01-01", "2025-12-31")
-data = data[["VTI", "BND"]]  # 強制排序
-
-# 初始化回測引擎
-engine = BacktestEngine(
-    target_ratio=0.6,
-    kf_q=0.001,
-    kp=0.5,
-    kd=0.5,
-    deadband=0.0125,
-    fee_rate=0.003,
-    stock_ticker="VTI",
-    bond_ticker="BND",
-)
-
-# 執行回測
-result = engine.run(data)
-
-# 查看結果
-print(f"年化報酬率: {result['metrics']['ann_return_pct']:.2f}%")
-print(f"Sharpe: {result['metrics']['sharpe']:.2f}")
-print(f"RMSE: {result['rmse']:.4f}")
-print(f"Cost: {result['cost']:.4f}")
-print(f"交易次數: {result['trade_count']}")
-```
-
-**BacktestEngine 回傳格式：**
-
-| 欄位 | 說明 |
-|------|------|
-| `nav_list` | 每日淨值（從 1.0 開始） |
-| `weights` | 每日股票權重（小數） |
-| `trade_count` | 總交易次數 |
-| `turnover` | 總週轉率 |
-| `actions` | 每日交易動作 |
-| `rmse` | 追蹤誤差（小數） |
-| `cost` | 總交易成本 = turnover * fee_rate（小數） |
-| `metrics` | 績效指標（ann_return, volatility, sharpe, max_drawdown） |
-| `kf_stock_velocities` | 每天的 KF 股票速度 |
-| `kf_bond_velocities` | 每天的 KF 債券速度 |
-| `p_terms` | 每天的 P 項 |
-| `d_terms` | 每天的 D 項 |
-| `u_values` | 每天的總控制量 u |
-| `dates` | 回測日期列表 |
-
-### 使用 Benchmark 策略
-
-```python
-import numpy as np
-from core.benchmark import run_bangbang, run_yearly, run_smart_pilot, scan_pareto_frontier
-
-# 準備資料
-prices_stock = data["VTI"].values
-prices_bond = data["BND"].values
-rets_stock = np.zeros(len(prices_stock))
-rets_stock[1:] = np.diff(prices_stock) / prices_stock[:-1]
-rets_bond = np.zeros(len(prices_bond))
-rets_bond[1:] = np.diff(prices_bond) / prices_bond[:-1]
-dates = data.index.tolist()
-
-# Bang-Bang Control
-bb = run_bangbang(rets_stock, rets_bond, dates, target_w=0.6, drift_tolerance=0.05, fee_rate=0.003)
-
-# Yearly Rebalance
-yr = run_yearly(rets_stock, rets_bond, dates, target_w=0.6, fee_rate=0.003)
-
-# Smart Pilot
-sp = run_smart_pilot(rets_stock, rets_bond, prices_stock, prices_bond, dates,
-                     target_w=0.6, fee_rate=0.003, kf_q=0.001, kp=0.5, kd=0.5, deadband=0.0125)
-
-# 帕雷托前線掃描
-pareto = scan_pareto_frontier(rets_stock, rets_bond, prices_stock, prices_bond, dates,
-                               target_w=0.6, fee_rate=0.003, kf_q=0.001, kp=0.5, kd=0.5)
-```
-
-**策略回傳格式（共用）：**
-
-| 欄位 | 說明 |
-|------|------|
-| `nav_list` | 每日淨值（從 1.0 開始） |
-| `weights` | 每日股票權重（小數） |
-| `trade_count` | 總交易次數 |
-| `turnover` | 總週轉率 |
-| `actions` | 每日交易動作 |
-| `rmse` | 追蹤誤差（小數） |
-| `cost` | 總交易成本（小數） |
-| `metrics` | 年化績效指標 |
-
-### 使用 Optimizer 最佳化參數
-
-```python
-from core.optimizer import run_grid_search, find_best_from_grid, run_slsqp, compare_hypervolumes
-from core.benchmark import scan_pareto_frontier
-
-# 1. Grid Search（每組 (Kp,Kd,Q) 掃描多個 deadband，計算超體積）
-grid_results = run_grid_search(
-    rets_stock, rets_bond, prices_stock, prices_bond, dates,
-    target_w=0.6, fee_rate=0.003,
-    kp_range=[0.1, 0.3, 0.5, 0.7, 1.0],
-    kd_range=[0.1, 0.3, 0.5, 0.7, 1.0],
-    q_values=[0.0001, 0.001, 0.01],
-    deadband_values=[0.01, 0.025, 0.05],
-)
-best = find_best_from_grid(grid_results)  # 超體積最大
-print(f"最佳: Kp={best['kp']}, Kd={best['kd']}, Q={best['q']}, HV={best['hypervolume']:.6f}")
-
-# 2. SLSQP（對每個 deadband 分別最佳化 Kp,Kd,Q）
-slsqp_results = run_slsqp(
-    rets_stock, rets_bond, prices_stock, prices_bond, dates,
-    initial_params={"kp": best["kp"], "kd": best["kd"], "q": best["q"]},
-    deadband_values=[0.01, 0.025, 0.05],
-)
-for r in slsqp_results:
-    print(f"  db={r['deadband']:.3f}: RMSE={r['rmse']:.4f}, AnnCost={r['ann_cost']:.4f}")
-
-# 3. 超體積比較
-pareto = scan_pareto_frontier(rets_stock, rets_bond, prices_stock, prices_bond, dates)
-hv = compare_hypervolumes(pareto)
-print(f"Winner: {hv['winner']}")
-```
-
-### 使用 LogKalmanFilter 卡爾曼濾波器
-
-```python
-import numpy as np
-from core.kalman_filter import LogKalmanFilter
-
-kf_stock = LogKalmanFilter(initial_log_price=np.log(400.0), q=0.001, r=0.005)
-
-for price in stock_prices:
-    kf_stock.predict()
-    kf_stock.update(np.log(price))
-    print(f"濾波價格: {kf_stock.filtered_price:.2f}, 速度: {kf_stock.velocity:.6f}")
-```
-
-### 使用 PDController PD 控制器
-
-```python
-from core.pd_controller import PDController
-
-pd = PDController(kp=0.3, kd=0.1)
-error = target_weight - current_weight
-u = pd.calculate(error, vel_stock=kf_stock.velocity, vel_bond=kf_bond.velocity)
-```
-
-**PD 控制器公式：**
-```
-P = Kp * error
-D = clip(Kd * (vel_stock - vel_bond), -0.15, 0.15)
-u = clip(P + D, -0.2, 0.2)
-```
 
 ## 核心概念
 
