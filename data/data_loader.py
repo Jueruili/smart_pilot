@@ -12,8 +12,8 @@
 版本：1.0.0
 """
 
-from typing import Optional
-from datetime import datetime
+from typing import Optional, Union
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -387,59 +387,121 @@ class DataLoader:
         tickers: Optional[list[str]] = None,
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
-        use_cache: bool = True
-    ) -> pd.DataFrame:
+        use_cache: bool = True,
+        warmup_days: int = 0,
+    ) -> Union[pd.DataFrame, dict]:
         """下載並處理資料（便捷方法）
 
         結合 download_data() 和 process_data() 的便捷方法。
+        如果 warmup_days > 0，會下載回測起始日之前的資料用於暖機。
 
         Args:
             tickers: 股票代碼列表
-            start_date: 開始日期
+            start_date: 回測開始日期（backtest_start_date）
             end_date: 結束日期
             use_cache: 是否使用快取
+            warmup_days: 暖機天數，如果 > 0 則回傳 dict 包含分割資料
 
         Returns:
-            pd.DataFrame: 處理後的收盤價資料
+            如果 warmup_days == 0:
+                pd.DataFrame: 處理後的收盤價資料（向後相容）
+            如果 warmup_days > 0:
+                dict: {
+                    "backtest_data": DataFrame,  # index >= start_date
+                    "warmup_data": DataFrame,    # index < start_date 的最後 warmup_days 列
+                    "actual_warmup_days": int,   # warmup_data 實際有幾列
+                }
 
         Example:
             >>> loader = DataLoader()
             >>> data = loader.load_and_process()  # 使用預設參數
             >>> print(data.head())
+            >>> # 帶暖機資料
+            >>> result = loader.load_and_process(warmup_days=20)
+            >>> print(result["backtest_data"].head())
         """
+        # 設定預設值
+        if tickers is None:
+            tickers = DEFAULT_TICKERS
+        if start_date is None:
+            start_date = DEFAULT_START_DATE
+        if end_date is None:
+            end_date = DEFAULT_END_DATE
+
+        backtest_start_date = start_date
+
+        # 如果需要暖機資料，往前多下載
+        if warmup_days > 0:
+            # 往前推算下載起始日（乘以 3 跳過週末、假日）
+            dl_start_dt = datetime.strptime(backtest_start_date, "%Y-%m-%d") - timedelta(days=warmup_days * 3)
+            actual_dl_start = dl_start_dt.strftime("%Y-%m-%d")
+            print(f"[DataLoader] 暖機模式：下載從 {actual_dl_start} 開始（暖機 {warmup_days} 天）")
+        else:
+            actual_dl_start = start_date
+
+        # 下載完整資料（含暖機段）
+        # 快取檔名用 backtest_start_date，但實際下載用 actual_dl_start
+        # 這裡我們用 actual_dl_start 下載，但快取名用 backtest_start_date
         raw_data = self.download_data(
             tickers=tickers,
-            start_date=start_date,
+            start_date=actual_dl_start,
             end_date=end_date,
             use_cache=use_cache
         )
-        return self.process_data(raw_data)
+        full_data = self.process_data(raw_data)
+
+        # 如果不需要暖機，直接回傳（向後相容）
+        if warmup_days == 0:
+            return full_data
+
+        # 切分暖機資料和回測資料
+        backtest_start_ts = pd.Timestamp(backtest_start_date)
+        warmup_data = full_data[full_data.index < backtest_start_ts].tail(warmup_days)
+        backtest_data = full_data[full_data.index >= backtest_start_ts]
+
+        actual_warmup = len(warmup_data)
+        if actual_warmup < warmup_days:
+            print(f"[DataLoader] 警告：只取得 {actual_warmup} 天暖機資料，少於設定的 {warmup_days} 天")
+
+        print(f"[DataLoader] 暖機資料: {actual_warmup} 天, "
+              f"回測資料: {len(backtest_data)} 天")
+
+        return {
+            "backtest_data": backtest_data,
+            "warmup_data": warmup_data,
+            "actual_warmup_days": actual_warmup,
+        }
 
 
 # 便捷函數
 def quick_load(
     tickers: Optional[list[str]] = None,
     start_date: Optional[str] = None,
-    end_date: Optional[str] = None
-) -> pd.DataFrame:
+    end_date: Optional[str] = None,
+    warmup_days: int = 0,
+) -> Union[pd.DataFrame, dict]:
     """快速載入資料的便捷函數
 
     Args:
         tickers: 股票代碼列表，預設為 ["SPY", "TLT"]
         start_date: 開始日期，預設為 "2013-01-01"
         end_date: 結束日期，預設為 "2025-12-31"
+        warmup_days: 暖機天數，如果 > 0 則回傳 dict 包含分割資料
 
     Returns:
-        pd.DataFrame: 處理後的收盤價資料
+        如果 warmup_days == 0: pd.DataFrame
+        如果 warmup_days > 0: dict
 
     Example:
         >>> from data.data_loader import quick_load
         >>> data = quick_load()  # 使用預設參數載入 SPY 和 TLT
         >>> data = quick_load(["AAPL", "MSFT"], "2020-01-01", "2023-12-31")
+        >>> result = quick_load(warmup_days=20)  # 帶暖機資料
     """
     loader = DataLoader()
     return loader.load_and_process(
         tickers=tickers,
         start_date=start_date,
-        end_date=end_date
+        end_date=end_date,
+        warmup_days=warmup_days,
     )

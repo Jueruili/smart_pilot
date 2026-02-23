@@ -31,6 +31,8 @@ def _single_grid_run(
     warmup: int = 30,
     d_clip: float = 0.15,
     output_clip: float = 0.2,
+    warmup_prices_stock: np.ndarray = None,
+    warmup_prices_bond: np.ndarray = None,
 ) -> dict:
     """
     單組 (Kp, Kd, Q) 的完整評估，供平行化使用。
@@ -49,6 +51,8 @@ def _single_grid_run(
         kf_q=q, kf_r=kf_r, kp=kp, kd=kd,
         deadband_values=deadband_values,
         warmup=warmup, d_clip=d_clip, output_clip=output_clip,
+        warmup_prices_stock=warmup_prices_stock,
+        warmup_prices_bond=warmup_prices_bond,
     )
 
     hv = calc_hypervolume(pareto["smart_pilot"], reference_point)
@@ -81,6 +85,8 @@ def run_grid_search(
     d_clip: float = 0.15,
     output_clip: float = 0.2,
     ref_multiplier: float = 1.1,
+    warmup_prices_stock: np.ndarray = None,
+    warmup_prices_bond: np.ndarray = None,
 ) -> List[dict]:
     """
     Grid Search：掃描所有 (Kp, Kd, Q) 組合，每組計算超體積。
@@ -142,6 +148,7 @@ def run_grid_search(
             dates, target_w, fee_rate,
             deadband_values, reference_point,
             kf_r, warmup, d_clip, output_clip,
+            warmup_prices_stock, warmup_prices_bond,
         )
         for kp, kd, q in tasks
     )
@@ -180,6 +187,8 @@ def run_slsqp(
     warmup: int = 30,
     d_clip: float = 0.15,
     output_clip: float = 0.2,
+    warmup_prices_stock: np.ndarray = None,
+    warmup_prices_bond: np.ndarray = None,
 ) -> List[dict]:
     """
     SLSQP 精確最佳化。
@@ -230,6 +239,8 @@ def run_slsqp(
                 target_w=target_w, fee_rate=fee_rate,
                 kf_q=q, kf_r=kf_r, kp=kp, kd=kd, deadband=deadband,
                 warmup=warmup, d_clip=d_clip, output_clip=output_clip,
+                warmup_prices_stock=warmup_prices_stock,
+                warmup_prices_bond=warmup_prices_bond,
             )
             return r["rmse"]  # 最小化追蹤誤差
 
@@ -255,6 +266,8 @@ def run_slsqp(
             target_w=target_w, fee_rate=fee_rate,
             kf_q=opt_q, kf_r=kf_r, kp=opt_kp, kd=opt_kd, deadband=deadband,
             warmup=warmup, d_clip=d_clip, output_clip=output_clip,
+            warmup_prices_stock=warmup_prices_stock,
+            warmup_prices_bond=warmup_prices_bond,
         )
 
         all_results.append({
@@ -301,6 +314,8 @@ def run_cma_es(
     sigma0: float = 0.5,
     maxiter: int = 100,
     popsize: int = 10,
+    warmup_prices_stock: np.ndarray = None,
+    warmup_prices_bond: np.ndarray = None,
 ) -> dict:
     """
     CMA-ES 全域最佳化。
@@ -346,6 +361,8 @@ def run_cma_es(
             kf_q=q, kf_r=kf_r, kp=kp, kd=kd,
             deadband_values=deadband_values,
             warmup=warmup, d_clip=d_clip, output_clip=output_clip,
+            warmup_prices_stock=warmup_prices_stock,
+            warmup_prices_bond=warmup_prices_bond,
         )
         hv = calc_hypervolume(pareto["smart_pilot"], reference_point)
         return -hv  # 最大化超體積 = 最小化負超體積
@@ -381,6 +398,8 @@ def run_cma_es(
         kf_q=opt_q, kf_r=kf_r, kp=opt_kp, kd=opt_kd,
         deadband_values=deadband_values,
         warmup=warmup, d_clip=d_clip, output_clip=output_clip,
+        warmup_prices_stock=warmup_prices_stock,
+        warmup_prices_bond=warmup_prices_bond,
     )
 
     return {

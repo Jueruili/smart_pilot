@@ -238,27 +238,51 @@ def run_smart_pilot(
     warmup: int = 30,
     d_clip: float = 0.15,
     output_clip: float = 0.2,
+    warmup_prices_stock: np.ndarray = None,
+    warmup_prices_bond: np.ndarray = None,
 ) -> dict:
     """
     Smart Pilot：PD 控制器 + Log-Space 卡爾曼濾波器。
 
     流程：
-    1. 用前 warmup 天初始化 KF（暖機）
-    2. 從第 warmup 天開始正式回測
-    3. 每天更新 KF，取得速度信號
-    4. PD 控制器計算控制量 u
-    5. |u| > deadband 才執行交易
+    1. 用暖機資料初始化 KF
+       - 如果提供 warmup_prices_stock/bond，用這些資料初始化，回測從 index 0 開始
+       - 如果不提供，用 prices_stock/bond 前 warmup 天初始化，從 warmup 開始回測
+    2. 每天更新 KF，取得速度信號
+    3. PD 控制器計算控制量 u
+    4. |u| > deadband 才執行交易
+
+    Args:
+        warmup_prices_stock: 外部暖機資料（回測起始日前的價格序列）
+        warmup_prices_bond: 外部暖機資料（回測起始日前的價格序列）
     """
     n = len(rets_stock)
 
-    # 初始化 KF（暖機）
-    kf_stock = LogKalmanFilter(np.log(prices_stock[0]), q=kf_q, r=kf_r)
-    kf_bond = LogKalmanFilter(np.log(prices_bond[0]), q=kf_q, r=kf_r)
-    for i in range(warmup):
-        kf_stock.predict()
-        kf_stock.update(np.log(prices_stock[i]))
-        kf_bond.predict()
-        kf_bond.update(np.log(prices_bond[i]))
+    # 判斷是否使用外部暖機資料
+    use_external_warmup = warmup_prices_stock is not None and warmup_prices_bond is not None
+
+    if use_external_warmup:
+        # 使用外部暖機資料初始化 KF
+        kf_stock = LogKalmanFilter(np.log(warmup_prices_stock[0]), q=kf_q, r=kf_r)
+        kf_bond = LogKalmanFilter(np.log(warmup_prices_bond[0]), q=kf_q, r=kf_r)
+        for i in range(len(warmup_prices_stock)):
+            kf_stock.predict()
+            kf_stock.update(np.log(warmup_prices_stock[i]))
+            kf_bond.predict()
+            kf_bond.update(np.log(warmup_prices_bond[i]))
+        # 外部暖機模式：回測從 index 0 開始
+        start_idx = 0
+    else:
+        # 原本行為：用 prices_stock/bond 前 warmup 天初始化
+        kf_stock = LogKalmanFilter(np.log(prices_stock[0]), q=kf_q, r=kf_r)
+        kf_bond = LogKalmanFilter(np.log(prices_bond[0]), q=kf_q, r=kf_r)
+        for i in range(warmup):
+            kf_stock.predict()
+            kf_stock.update(np.log(prices_stock[i]))
+            kf_bond.predict()
+            kf_bond.update(np.log(prices_bond[i]))
+        # 原本行為：回測從 warmup 開始
+        start_idx = warmup
 
     pd_ctrl = PDController(kp=kp, kd=kd, d_clip=d_clip, output_clip=output_clip)
 
@@ -270,7 +294,7 @@ def run_smart_pilot(
     weights = []
     actions = []
 
-    for i in range(warmup, n):
+    for i in range(start_idx, n):
         # 更新 KF
         kf_stock.predict()
         kf_stock.update(np.log(prices_stock[i]))
@@ -342,6 +366,8 @@ def scan_pareto_frontier(
     warmup: int = 30,
     d_clip: float = 0.15,
     output_clip: float = 0.2,
+    warmup_prices_stock: np.ndarray = None,
+    warmup_prices_bond: np.ndarray = None,
 ) -> dict:
     """
     掃描不同閾值，生成三個策略的 Pareto Frontier 數據。
@@ -353,6 +379,10 @@ def scan_pareto_frontier(
     Y 軸成本說明：
     - cost：總交易成本（小數）= turnover * fee_rate
     - ann_cost：年化成本 = cost / 回測年數（用於 Pareto 圖 Y 軸）
+
+    Args:
+        warmup_prices_stock: 外部暖機資料（回測起始日前的價格序列）
+        warmup_prices_bond: 外部暖機資料（回測起始日前的價格序列）
 
     Returns:
         {
@@ -374,6 +404,8 @@ def scan_pareto_frontier(
             target_w=target_w, fee_rate=fee_rate,
             kf_q=kf_q, kf_r=kf_r, kp=kp, kd=kd, deadband=float(deadband),
             warmup=warmup, d_clip=d_clip, output_clip=output_clip,
+            warmup_prices_stock=warmup_prices_stock,
+            warmup_prices_bond=warmup_prices_bond,
         )
         results["smart_pilot"].append({
             "rmse": r["rmse"],

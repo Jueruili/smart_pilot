@@ -52,11 +52,30 @@ CMA_ES_CACHE_PATH = "data/cache/cma_es_results.json"
 # 快取函數
 # =============================================================================
 @st.cache_data(ttl=3600, show_spinner=False)
-def load_data(tickers: list, start_date: str, end_date: str) -> pd.DataFrame:
-    """載入並處理資料"""
+def load_data(tickers: list, start_date: str, end_date: str, warmup_days: int = 20) -> dict:
+    """載入並處理資料（含暖機資料）
+
+    Args:
+        tickers: 股票代碼列表
+        start_date: 回測開始日期
+        end_date: 回測結束日期
+        warmup_days: 暖機天數
+
+    Returns:
+        dict: {
+            "backtest_data": DataFrame,
+            "warmup_data": DataFrame,
+            "actual_warmup_days": int,
+        }
+    """
     loader = DataLoader()
-    data = loader.load_and_process(tickers, start_date, end_date)
-    return data
+    result = loader.load_and_process(
+        tickers=tickers,
+        start_date=start_date,
+        end_date=end_date,
+        warmup_days=warmup_days,
+    )
+    return result
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -181,9 +200,9 @@ def render_sidebar() -> dict:
         "暖機天數",
         min_value=10,
         max_value=100,
-        value=30,
+        value=20,
         step=1,
-        help="KF 初始化所需天數，建議 30 天"
+        help="回測起始日前的暖機天數，使用前一年底的歷史資料初始化 KF，建議 20 天"
     )
 
     kf_r = st.sidebar.number_input(
@@ -288,16 +307,20 @@ def render_sidebar() -> dict:
 
     # 執行 Grid Search 按鈕
     if st.sidebar.button("▶ 執行 Grid Search（約 2-5 分鐘）", type="primary"):
-        # 1. 先載入資料
+        # 1. 先載入資料（含暖機資料）
         with st.spinner("載入資料..."):
-            data = load_data(
+            result = load_data(
                 tickers=[ticker1, ticker2],
                 start_date=str(start_date),
-                end_date=str(end_date)
+                end_date=str(end_date),
+                warmup_days=warmup,
             )
-            prices_stock = data[ticker1].values
-            prices_bond = data[ticker2].values
-            dates = data.index.tolist()
+            full_backtest = result["backtest_data"]
+            warmup_prices_stock = result["warmup_data"][ticker1].values
+            warmup_prices_bond = result["warmup_data"][ticker2].values
+            prices_stock = full_backtest[ticker1].values
+            prices_bond = full_backtest[ticker2].values
+            dates = full_backtest.index.tolist()
             rets_stock = np.diff(prices_stock) / prices_stock[:-1]
             rets_bond = np.diff(prices_bond) / prices_bond[:-1]
             prices_stock = prices_stock[1:]
@@ -320,6 +343,8 @@ def render_sidebar() -> dict:
                 kf_r=kf_r,
                 warmup=warmup,
                 ref_multiplier=ref_multiplier,
+                warmup_prices_stock=warmup_prices_stock,
+                warmup_prices_bond=warmup_prices_bond,
             )
             best = find_best_from_grid(results)
         elapsed = time.time() - t0
@@ -351,16 +376,20 @@ def render_sidebar() -> dict:
 
     # 執行 CMA-ES 全域最佳化按鈕（雙起點）
     if st.sidebar.button("▶ 執行 CMA-ES 全域最佳化（約 5-10 分鐘）", type="primary"):
-        # 1. 載入資料
+        # 1. 載入資料（含暖機資料）
         with st.spinner("載入資料..."):
-            data = load_data(
+            result = load_data(
                 tickers=[ticker1, ticker2],
                 start_date=str(start_date),
-                end_date=str(end_date)
+                end_date=str(end_date),
+                warmup_days=warmup,
             )
-            prices_stock = data[ticker1].values
-            prices_bond = data[ticker2].values
-            dates = data.index.tolist()
+            full_backtest = result["backtest_data"]
+            warmup_prices_stock = result["warmup_data"][ticker1].values
+            warmup_prices_bond = result["warmup_data"][ticker2].values
+            prices_stock = full_backtest[ticker1].values
+            prices_bond = full_backtest[ticker2].values
+            dates = full_backtest.index.tolist()
             rets_stock = np.diff(prices_stock) / prices_stock[:-1]
             rets_bond = np.diff(prices_bond) / prices_bond[:-1]
             prices_stock = prices_stock[1:]
@@ -389,6 +418,8 @@ def render_sidebar() -> dict:
                 x0=[cma_kp_min, cma_kd_min, np.log(cma_q_min)],
                 maxiter=int(cma_maxiter),
                 popsize=int(cma_popsize),
+                warmup_prices_stock=warmup_prices_stock,
+                warmup_prices_bond=warmup_prices_bond,
             )
 
         with st.spinner("CMA-ES 第二輪搜索（從右上角出發）..."):
@@ -409,6 +440,8 @@ def render_sidebar() -> dict:
                 x0=[cma_kp_max, cma_kd_max, np.log(cma_q_max)],
                 maxiter=int(cma_maxiter),
                 popsize=int(cma_popsize),
+                warmup_prices_stock=warmup_prices_stock,
+                warmup_prices_bond=warmup_prices_bond,
             )
 
         elapsed = time.time() - t0
@@ -545,7 +578,9 @@ def render_sidebar() -> dict:
 # =============================================================================
 # Tab 1: Pareto Frontier
 # =============================================================================
-def render_tab_pareto(params: dict, data: pd.DataFrame):
+def render_tab_pareto(params: dict, data: pd.DataFrame,
+                      warmup_prices_stock: np.ndarray,
+                      warmup_prices_bond: np.ndarray):
     """渲染 Pareto Frontier 分頁"""
     st.header("Pareto Frontier - 三策略對比")
 
@@ -577,6 +612,8 @@ def render_tab_pareto(params: dict, data: pd.DataFrame):
             kd=params["kd"],
             n_points=30,
             warmup=params["warmup"],
+            warmup_prices_stock=warmup_prices_stock,
+            warmup_prices_bond=warmup_prices_bond,
         )
 
     # 計算超體積（使用 ref_multiplier）
@@ -684,6 +721,8 @@ def render_tab_pareto(params: dict, data: pd.DataFrame):
             kd=params["kd"],
             deadband=params["deadband"],
             warmup=params["warmup"],
+            warmup_prices_stock=warmup_prices_stock,
+            warmup_prices_bond=warmup_prices_bond,
         )
 
     col1, col2, col3, col4 = st.columns(4)
@@ -721,7 +760,9 @@ def render_tab_pareto(params: dict, data: pd.DataFrame):
 # =============================================================================
 # Tab 2: Heatmap
 # =============================================================================
-def render_tab_heatmap(params: dict, data: pd.DataFrame):
+def render_tab_heatmap(params: dict, data: pd.DataFrame,
+                       warmup_prices_stock: np.ndarray,
+                       warmup_prices_bond: np.ndarray):
     """渲染參數空間熱力圖分頁"""
     st.header("Heatmap - 參數空間")
 
@@ -904,6 +945,8 @@ def render_tab_heatmap(params: dict, data: pd.DataFrame):
                     kd=test_kd,
                     n_points=15,
                     warmup=params["warmup"],
+                    warmup_prices_stock=warmup_prices_stock,
+                    warmup_prices_bond=warmup_prices_bond,
                 )
 
                 # 計算參考點（用 Bang-Bang 最差點 × ref_multiplier）
@@ -924,6 +967,8 @@ def render_tab_heatmap(params: dict, data: pd.DataFrame):
                     kd=test_kd,
                     deadband=test_deadband,
                     warmup=params["warmup"],
+                    warmup_prices_stock=warmup_prices_stock,
+                    warmup_prices_bond=warmup_prices_bond,
                 )
                 n_years = len(dates) / 252.0
 
@@ -976,7 +1021,9 @@ def render_tab_heatmap(params: dict, data: pd.DataFrame):
 # =============================================================================
 # Tab 3: Rolling Window
 # =============================================================================
-def render_tab_rolling(params: dict, data: pd.DataFrame):
+def render_tab_rolling(params: dict, data: pd.DataFrame,
+                       warmup_prices_stock: np.ndarray,
+                       warmup_prices_bond: np.ndarray):
     """渲染滾動窗口分析分頁"""
     st.header("Rolling Window Analysis")
 
@@ -1032,7 +1079,7 @@ def render_tab_rolling(params: dict, data: pd.DataFrame):
             w_prices_bond = prices_bond[start_idx:end_idx]
             w_dates = dates[start_idx:end_idx]
 
-            # 執行回測
+            # 執行回測（使用外部暖機資料）
             result = run_smart_pilot(
                 w_rets_stock, w_rets_bond, w_prices_stock, w_prices_bond, w_dates,
                 target_w=params["target_w"],
@@ -1043,6 +1090,8 @@ def render_tab_rolling(params: dict, data: pd.DataFrame):
                 kd=params["kd"],
                 deadband=params["deadband"],
                 warmup=params["warmup"],
+                warmup_prices_stock=warmup_prices_stock,
+                warmup_prices_bond=warmup_prices_bond,
             )
 
             rolling_results.append({
@@ -1109,7 +1158,8 @@ def render_tab_rolling(params: dict, data: pd.DataFrame):
 # =============================================================================
 # Tab 4: Monte Carlo
 # =============================================================================
-def render_tab_monte_carlo(params: dict, data: pd.DataFrame):
+def render_tab_monte_carlo(params: dict, data: pd.DataFrame,
+                           warmup_prices_stock: np.ndarray, warmup_prices_bond: np.ndarray):
     """渲染蒙地卡羅模擬分頁"""
     st.header("Monte Carlo Simulation")
 
@@ -1172,6 +1222,7 @@ def render_tab_monte_carlo(params: dict, data: pd.DataFrame):
                 sim_dates = dates[warmup:]
 
                 # 執行回測
+                # 注意：KF 暖機用原始的 warmup_prices，每次模擬都用同一份初始化 KF
                 result = run_smart_pilot(
                     np.concatenate([[0], sim_rets_stock]),
                     np.concatenate([[0], sim_rets_bond]),
@@ -1185,7 +1236,9 @@ def render_tab_monte_carlo(params: dict, data: pd.DataFrame):
                     kp=params["kp"],
                     kd=params["kd"],
                     deadband=params["deadband"],
-                    warmup=1,
+                    warmup=0,
+                    warmup_prices_stock=warmup_prices_stock,
+                    warmup_prices_bond=warmup_prices_bond,
                 )
 
                 final_nav = result["nav_list"][-1]
@@ -1313,14 +1366,25 @@ def main():
     基於 **PD 控制器 + Log-Space 卡爾曼濾波** 的智慧再平衡系統 (v3.0)。
     """)
 
-    # 載入資料
+    # 載入資料（含暖機資料）
     try:
-        data = load_data(
+        result = load_data(
             tickers=[params["ticker1"], params["ticker2"]],
             start_date=str(params["start_date"]),
-            end_date=str(params["end_date"])
+            end_date=str(params["end_date"]),
+            warmup_days=params["warmup"],
         )
-        data = data[[params["ticker1"], params["ticker2"]]]
+        data = result["backtest_data"][[params["ticker1"], params["ticker2"]]]
+        warmup_prices_stock = result["warmup_data"][params["ticker1"]].values
+        warmup_prices_bond = result["warmup_data"][params["ticker2"]].values
+
+        # 警告：暖機資料不足
+        if result["actual_warmup_days"] < params["warmup"]:
+            st.warning(
+                f"警告：只取得 {result['actual_warmup_days']} 天暖機資料，"
+                f"少於設定的 {params['warmup']} 天，"
+                "建議將回測起始日往後移或縮短暖機天數"
+            )
     except Exception as e:
         st.error(f"資料載入失敗：{str(e)}")
         return
@@ -1334,16 +1398,16 @@ def main():
     ])
 
     with tab1:
-        render_tab_pareto(params, data)
+        render_tab_pareto(params, data, warmup_prices_stock, warmup_prices_bond)
 
     with tab2:
-        render_tab_heatmap(params, data)
+        render_tab_heatmap(params, data, warmup_prices_stock, warmup_prices_bond)
 
     with tab3:
-        render_tab_rolling(params, data)
+        render_tab_rolling(params, data, warmup_prices_stock, warmup_prices_bond)
 
     with tab4:
-        render_tab_monte_carlo(params, data)
+        render_tab_monte_carlo(params, data, warmup_prices_stock, warmup_prices_bond)
 
 
 if __name__ == "__main__":
