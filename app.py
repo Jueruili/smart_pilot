@@ -251,6 +251,28 @@ def render_sidebar() -> dict:
     )
 
     # =========================================================================
+    # 區塊 3.55：標準化參考點設定
+    # =========================================================================
+    st.sidebar.header("📐 標準化參考點設定")
+    st.sidebar.markdown(
+        "設定標準化 Pareto 圖的右上角參考座標\n"
+        "x 軸(RMSE) 和 y 軸(Cost) 都會除以此值標準化為 0~1"
+    )
+    col1, col2 = st.sidebar.columns(2)
+    with col1:
+        norm_ref_rmse_pct = st.number_input(
+            "參考 RMSE (%)",
+            min_value=0.01, value=8.0, step=0.5, format="%.2f",
+            help="x 軸最大值，單位 %，例如 8 代表 8%"
+        )
+    with col2:
+        norm_ref_cost_pct = st.number_input(
+            "參考 Cost (%/年)",
+            min_value=0.001, value=0.04, step=0.005, format="%.3f",
+            help="y 軸最大值，單位 %/年，例如 0.04 代表 0.04%/年"
+        )
+
+    # =========================================================================
     # 區塊 3.6：CMA-ES 設定
     # =========================================================================
     st.sidebar.header("🔍 CMA-ES 設定")
@@ -572,6 +594,8 @@ def render_sidebar() -> dict:
         "cma_q_max": cma_q_max,
         "cma_maxiter": cma_maxiter,
         "cma_popsize": cma_popsize,
+        "norm_ref_rmse": norm_ref_rmse_pct / 100,
+        "norm_ref_cost": norm_ref_cost_pct / 100,
     }
 
 
@@ -690,11 +714,23 @@ def render_tab_pareto(params: dict, data: pd.DataFrame,
     st.subheader("超體積指標 (Hypervolume)")
     col1, col2, col3 = st.columns(3)
     with col1:
-        st.metric("Smart Pilot", f"{hv_comparison['smart_pilot'] * 10000:.4f} %%")
+        st.metric(
+            "Smart Pilot",
+            f"{hv_sp:.6f}",
+            help=f"×10000 = {hv_sp * 10000:.4f}"
+        )
     with col2:
-        st.metric("Threshold-only", f"{hv_comparison['threshold_only'] * 10000:.4f} %%")
+        st.metric(
+            "Threshold-only",
+            f"{hv_to:.6f}",
+            help=f"×10000 = {hv_to * 10000:.4f}"
+        )
     with col3:
-        st.metric("Time-and-threshold", f"{hv_comparison['time_and_threshold'] * 10000:.4f} %%")
+        st.metric(
+            "Time-and-threshold",
+            f"{hv_tat:.6f}",
+            help=f"×10000 = {hv_tat * 10000:.4f}"
+        )
 
     winner = hv_comparison["winner"]
     if winner == "smart_pilot":
@@ -709,55 +745,119 @@ def render_tab_pareto(params: dict, data: pd.DataFrame,
         f"參考點：RMSE={ref_rmse:.5f}，Cost={ref_cost:.6f}"
     )
 
-    # 當前參數回測結果
-    st.markdown("---")
-    st.subheader("當前參數回測結果")
+    with st.expander("📊 標準化 Pareto 圖", expanded=True):
 
-    with st.spinner("執行回測..."):
-        sp_result = run_smart_pilot(
-            rets_stock, rets_bond, prices_stock, prices_bond, dates,
-            target_w=params["target_w"],
-            fee_rate=params["fee_rate"],
-            kf_q=params["kf_q"],
-            kf_r=params["kf_r"],
-            kp=params["kp"],
-            kd=params["kd"],
-            deadband=params["deadband"],
-            warmup=params["warmup"],
-            warmup_prices_stock=warmup_prices_stock,
-            warmup_prices_bond=warmup_prices_bond,
+        norm_ref_rmse = params["norm_ref_rmse"]
+        norm_ref_cost = params["norm_ref_cost"]
+
+        # 標準化函式
+        def normalize_points(points):
+            return [
+                {
+                    "rmse_norm": p["rmse"] / norm_ref_rmse,
+                    "cost_norm": p["ann_cost"] / norm_ref_cost,
+                }
+                for p in points
+            ]
+
+        sp_norm  = normalize_points(pareto["smart_pilot"])
+        to_norm  = normalize_points(pareto["threshold_only"])
+        tat_norm = normalize_points(pareto["time_and_threshold"])
+
+        # 標準化空間 HV（參考點固定 (1,1)）
+        ref_norm = {"rmse": 1.0, "cost": 1.0}
+
+        def to_hv_input(norm_pts):
+            return [{"rmse": p["rmse_norm"], "cost": p["cost_norm"]} for p in norm_pts]
+
+        hv_sp_norm  = calc_hypervolume(to_hv_input(sp_norm),  ref_norm)
+        hv_to_norm  = calc_hypervolume(to_hv_input(to_norm),  ref_norm)
+        hv_tat_norm = calc_hypervolume(to_hv_input(tat_norm), ref_norm)
+
+        # 繪製標準化圖
+        fig_norm = go.Figure()
+        fig_norm.add_trace(go.Scatter(
+            x=[p["rmse_norm"] for p in sp_norm],
+            y=[p["cost_norm"] for p in sp_norm],
+            mode="lines+markers",
+            name="Smart Pilot",
+            line=dict(color="#FFD700", width=2),
+            marker=dict(size=6),
+            hovertemplate="RMSE: %{x:.3f}<br>Cost: %{y:.4f}<extra></extra>"
+        ))
+        fig_norm.add_trace(go.Scatter(
+            x=[p["rmse_norm"] for p in to_norm],
+            y=[p["cost_norm"] for p in to_norm],
+            mode="lines+markers",
+            name="Threshold-only",
+            line=dict(color="gray", width=1.5, dash="dash"),
+            marker=dict(size=5),
+            hovertemplate="RMSE: %{x:.3f}<br>Cost: %{y:.4f}<extra></extra>"
+        ))
+        fig_norm.add_trace(go.Scatter(
+            x=[p["rmse_norm"] for p in tat_norm],
+            y=[p["cost_norm"] for p in tat_norm],
+            mode="lines+markers",
+            name="Time-and-threshold",
+            line=dict(color="cyan", width=1.5, dash="dot"),
+            marker=dict(size=5),
+            hovertemplate="RMSE: %{x:.3f}<br>Cost: %{y:.4f}<extra></extra>"
+        ))
+        fig_norm.add_trace(go.Scatter(
+            x=[1.0], y=[1.0],
+            mode="markers",
+            name="參考點 (1,1)",
+            marker=dict(size=14, color="red", symbol="x-thin", line=dict(width=3)),
+            hovertemplate="參考點 (1.0, 1.0)<extra></extra>"
+        ))
+        fig_norm.update_layout(
+            xaxis_title="標準化追蹤誤差 RMSE（0~1）",
+            yaxis_title="標準化年化交易成本（0~1）",
+            xaxis=dict(range=[0, 1.15]),
+            yaxis=dict(range=[0, 1.15]),
+            hovermode="closest",
+            legend=dict(yanchor="top", y=0.99, xanchor="right", x=0.99),
         )
+        st.plotly_chart(fig_norm, use_container_width=True)
 
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("年化報酬", f"{sp_result['metrics']['ann_return_pct']:.2f}%")
-    with col2:
-        st.metric("Sharpe", f"{sp_result['metrics']['sharpe']:.2f}")
-    with col3:
-        st.metric("RMSE", f"{sp_result['rmse'] * 100:.2f}%")
-    with col4:
-        st.metric("交易次數", f"{sp_result['trade_count']}")
+        # 標準化 HV 顯示
+        st.subheader("標準化超體積指標")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric(
+                "Smart Pilot",
+                f"{hv_sp_norm:.6f}",
+                help=f"×10000 = {hv_sp_norm * 10000:.4f}"
+            )
+        with col2:
+            st.metric(
+                "Threshold-only",
+                f"{hv_to_norm:.6f}",
+                help=f"×10000 = {hv_to_norm * 10000:.4f}"
+            )
+        with col3:
+            st.metric(
+                "Time-and-threshold",
+                f"{hv_tat_norm:.6f}",
+                help=f"×10000 = {hv_tat_norm * 10000:.4f}"
+            )
 
-    col1, col2 = st.columns(2)
-    with col1:
-        st.metric("年化週轉率", f"{sp_result['metrics']['ann_turnover'] * 100:.2f}%")
-    with col2:
-        st.metric("年化資產波動", f"{sp_result['metrics']['ann_wealth_vol'] * 100:.2f}%")
+        norm_scores = {
+            "Smart Pilot": hv_sp_norm,
+            "Threshold-only": hv_to_norm,
+            "Time-and-threshold": hv_tat_norm,
+        }
+        norm_winner = max(norm_scores, key=norm_scores.get)
 
-    # 淨值曲線
-    fig_nav = go.Figure()
-    fig_nav.add_trace(go.Scatter(
-        y=sp_result["nav_list"],
-        mode="lines",
-        name="Smart Pilot NAV",
-        line=dict(color="#FFD700", width=2)
-    ))
-    fig_nav.update_layout(
-        xaxis_title="交易日",
-        yaxis_title="淨值",
-        hovermode="x unified"
-    )
-    st.plotly_chart(fig_nav, use_container_width=True)
+        if norm_winner == "Smart Pilot":
+            st.success(f"標準化空間 Winner：Smart Pilot")
+        else:
+            st.info(f"標準化空間 Winner：{norm_winner}")
+
+        st.caption(
+            f"標準化參考點：RMSE={norm_ref_rmse*100:.2f}%，"
+            f"Cost={norm_ref_cost*100:.3f}%/年 → 標準化後固定為 (1, 1)"
+        )
 
 
 # =============================================================================
