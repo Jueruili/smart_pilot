@@ -213,24 +213,6 @@ def render_sidebar() -> dict:
     )
 
     # =========================================================================
-    # 區塊 3.5：參考點設定
-    # =========================================================================
-    st.sidebar.header("📐 參考點設定")
-    st.sidebar.markdown(
-        "超體積參考點 = Threshold-only 最差點 × 倍數\n"
-        "倍數越大 → 面積越大，倍數越小 → 比較更嚴格"
-    )
-    ref_multiplier = st.sidebar.number_input(
-        "參考點倍數",
-        min_value=0.5,
-        max_value=3.0,
-        value=1.1,
-        step=0.1,
-        format="%.1f",
-        help="預設 1.1，調小（如 0.8）讓比較更嚴格，調大讓差距更明顯"
-    )
-
-    # =========================================================================
     # 區塊 3.55：標準化參考點設定
     # =========================================================================
     st.sidebar.header("📐 標準化參考點設定")
@@ -297,7 +279,6 @@ def render_sidebar() -> dict:
 
     # 執行 Grid Search 按鈕
     if st.sidebar.button("▶ 執行 Grid Search（約 2-5 分鐘）", type="primary"):
-        # 1. 先載入資料（含暖機資料）
         with st.spinner("載入資料..."):
             result = load_data(
                 tickers=[ticker1, ticker2],
@@ -317,29 +298,42 @@ def render_sidebar() -> dict:
             prices_bond = prices_bond[1:]
             dates = dates[1:]
 
-        # 2. 執行 Grid Search
+        kp_range = np.linspace(kp_min, kp_max, int(kp_points)).tolist()
+        kd_range = np.linspace(kd_min, kd_max, int(kd_points)).tolist()
+        deadband_values_list = np.linspace(db_min, db_max, int(db_points)).tolist()
+        total_tasks = len(q_values) * len(kp_range) * len(kd_range)
+
+        st.sidebar.info(f"共 {total_tasks} 組參數，使用 {n_jobs} 核心平行運算")
+        progress_bar = st.sidebar.progress(0)
+        status_text = st.sidebar.empty()
+        status_text.text(f"Grid Search 進度：0/{total_tasks}")
+
         t0 = time.time()
-        with st.spinner("正在執行 Grid Search，請稍候..."):
-            from core.optimizer import run_grid_search, find_best_from_grid
-            results = run_grid_search(
-                rets_stock, rets_bond, prices_stock, prices_bond, dates,
-                target_w=target_w,
-                fee_rate=fee_rate,
-                kp_range=np.linspace(kp_min, kp_max, int(kp_points)).tolist(),
-                kd_range=np.linspace(kd_min, kd_max, int(kd_points)).tolist(),
-                q_values=q_values,
-                deadband_values=np.linspace(db_min, db_max, int(db_points)).tolist(),
-                n_jobs=n_jobs,
-                kf_r=kf_r,
-                warmup=warmup,
-                ref_multiplier=ref_multiplier,
-                warmup_prices_stock=warmup_prices_stock,
-                warmup_prices_bond=warmup_prices_bond,
-            )
-            best = find_best_from_grid(results)
+        from core.optimizer import run_grid_search_with_progress, find_best_from_grid
+        results = run_grid_search_with_progress(
+            rets_stock, rets_bond, prices_stock, prices_bond, dates,
+            target_w=target_w,
+            fee_rate=fee_rate,
+            kp_range=kp_range,
+            kd_range=kd_range,
+            q_values=q_values,
+            deadband_values=deadband_values_list,
+            n_jobs=n_jobs,
+            kf_r=kf_r,
+            warmup=warmup,
+            ref_multiplier=1.1,
+            warmup_prices_stock=warmup_prices_stock,
+            warmup_prices_bond=warmup_prices_bond,
+            progress_bar=progress_bar,
+            status_text=status_text,
+            total_tasks=total_tasks,
+        )
+        best = find_best_from_grid(results)
         elapsed = time.time() - t0
 
-        # 3. 儲存 JSON
+        progress_bar.progress(1.0)
+        status_text.text(f"完成！共 {total_tasks} 組，耗時 {elapsed:.1f} 秒")
+
         cache_path = Path("data/cache/grid_search_results.json")
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         with open(cache_path, "w", encoding="utf-8") as f:
@@ -348,20 +342,17 @@ def render_sidebar() -> dict:
                 "best": best,
                 "metadata": {
                     "q_values": q_values,
-                    "kp_range": np.linspace(kp_min, kp_max, int(kp_points)).tolist(),
-                    "kd_range": np.linspace(kd_min, kd_max, int(kd_points)).tolist(),
-                    "deadband_values": np.linspace(db_min, db_max, int(db_points)).tolist(),
+                    "kp_range": kp_range,
+                    "kd_range": kd_range,
+                    "deadband_values": deadband_values_list,
                 }
             }, f, ensure_ascii=False, indent=2)
 
-        # 4. 清除舊快取讓 load_grid_cache() 重新讀取
         load_grid_cache.clear()
-
-        # 5. 顯示結果
         st.sidebar.success(
             f"Grid Search 完成！共 {len(results)} 組，耗時 {elapsed:.1f} 秒\n"
-            f"最佳參數：Kp={best['kp']:.2f}, Kd={best['kd']:.2f}, "
-            f"Q={best['q']:.5f}, HV={best['hypervolume'] * 10000:.4f} %%"
+            f"最佳：Kp={best['kp']:.2f}, Kd={best['kd']:.2f}, "
+            f"Q={best['q']:.5f}, HV={best['hypervolume'] * 10000:.4f}"
         )
 
     if st.sidebar.button("▶ 執行貝氏最佳化（約 3-8 分鐘）", type="primary"):
@@ -384,31 +375,39 @@ def render_sidebar() -> dict:
             prices_bond_bt  = prices_bond_bt[1:]
             dates_bt        = dates_bt[1:]
 
+        n_trials_int = int(bayes_n_trials)
+        progress_bar = st.sidebar.progress(0)
+        status_text = st.sidebar.empty()
+        status_text.text(f"貝氏最佳化進度：0/{n_trials_int}")
+
         t0 = time.time()
-        with st.spinner(f"貝氏最佳化中（{int(bayes_n_trials)} trials）..."):
-            from core.optimizer import run_bayesian_opt
-            bayes_result = run_bayesian_opt(
-                rets_stock_bt, rets_bond_bt,
-                prices_stock_bt, prices_bond_bt, dates_bt,
-                target_w=target_w,
-                fee_rate=fee_rate,
-                deadband_values=np.linspace(db_min, db_max, int(db_points)).tolist(),
-                kf_r=kf_r,
-                warmup=warmup,
-                warmup_prices_stock=wm_prices_stock,
-                warmup_prices_bond=wm_prices_bond,
-                ref_rmse=norm_ref_rmse_pct / 100,
-                ref_cost=norm_ref_cost_pct / 100,
-                kp_min=bayes_kp_min, kp_max=bayes_kp_max,
-                kd_min=bayes_kd_min, kd_max=bayes_kd_max,
-                q_min=bayes_q_min,   q_max=bayes_q_max,
-                n_trials=int(bayes_n_trials),
-                n_jobs=n_jobs,
-                d_clip=d_clip,
-                output_clip=output_clip,
-                ref_multiplier=ref_multiplier,
-            )
+        from core.optimizer import run_bayesian_opt
+        bayes_result = run_bayesian_opt(
+            rets_stock_bt, rets_bond_bt,
+            prices_stock_bt, prices_bond_bt, dates_bt,
+            target_w=target_w,
+            fee_rate=fee_rate,
+            deadband_values=np.linspace(db_min, db_max, int(db_points)).tolist(),
+            kf_r=kf_r,
+            warmup=warmup,
+            warmup_prices_stock=wm_prices_stock,
+            warmup_prices_bond=wm_prices_bond,
+            ref_rmse=norm_ref_rmse_pct / 100,
+            ref_cost=norm_ref_cost_pct / 100,
+            kp_min=bayes_kp_min, kp_max=bayes_kp_max,
+            kd_min=bayes_kd_min, kd_max=bayes_kd_max,
+            q_min=bayes_q_min,   q_max=bayes_q_max,
+            n_trials=n_trials_int,
+            n_jobs=n_jobs,
+            d_clip=d_clip,
+            output_clip=output_clip,
+            progress_bar=progress_bar,
+            status_text=status_text,
+        )
         elapsed = time.time() - t0
+
+        progress_bar.progress(1.0)
+        status_text.text(f"完成！{n_trials_int} 次試驗，耗時 {elapsed:.1f} 秒")
 
         cache_path = Path("data/cache/bayesian_opt_results.json")
         cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -506,7 +505,6 @@ def render_sidebar() -> dict:
         "n_jobs": n_jobs,
         "d_clip": d_clip,
         "output_clip": output_clip,
-        "ref_multiplier": ref_multiplier,
         "bayes_kp_min": bayes_kp_min,
         "bayes_kp_max": bayes_kp_max,
         "bayes_kd_min": bayes_kd_min,
@@ -564,8 +562,8 @@ def render_tab_pareto(params: dict, data: pd.DataFrame,
     tat_pts = [{"rmse": p["rmse"], "cost": p["ann_cost"]}
                for p in pareto["time_and_threshold"]]
     all_pts = pareto["smart_pilot"] + pareto["threshold_only"] + tat_pts
-    ref_rmse = max(p["rmse"] for p in all_pts) * params["ref_multiplier"]
-    ref_cost = max(p["cost"] for p in all_pts) * params["ref_multiplier"]
+    ref_rmse = max(p["rmse"] for p in all_pts) * 1.1
+    ref_cost = max(p["cost"] for p in all_pts) * 1.1
     reference_point = {"rmse": ref_rmse, "cost": ref_cost}
 
     hv_sp = calc_hypervolume(pareto["smart_pilot"], reference_point)
@@ -661,7 +659,7 @@ def render_tab_pareto(params: dict, data: pd.DataFrame,
         st.info(f"Winner: Time-and-threshold")
 
     st.caption(
-        f"參考點倍數：{params['ref_multiplier']}x | "
+        f"參考點倍數：1.1x | "
         f"參考點：RMSE={ref_rmse:.5f}，Cost={ref_cost:.6f}"
     )
 
@@ -900,10 +898,7 @@ def render_tab_heatmap(params: dict, data: pd.DataFrame,
     st.markdown("---")
     with st.expander("🧪 單點快速測試", expanded=False):
         st.markdown("輸入一組參數，快速計算這組參數的超體積和回測指標。")
-        st.markdown(
-            f"目前參考點倍數：**{params['ref_multiplier']}x** "
-            "（可在左側側邊欄「參考點設定」調整）"
-        )
+        st.markdown("目前參考點倍數：**1.1x**")
 
         col1, col2, col3, col4 = st.columns(4)
         with col1:
@@ -956,8 +951,8 @@ def render_tab_heatmap(params: dict, data: pd.DataFrame,
 
                 # 計算參考點（用 Threshold-only 最差點 × ref_multiplier）
                 all_pts = pareto["smart_pilot"] + pareto["threshold_only"]
-                ref_rmse = max(p["rmse"] for p in all_pts) * params["ref_multiplier"]
-                ref_cost = max(p["ann_cost"] for p in all_pts) * params["ref_multiplier"]
+                ref_rmse = max(p["rmse"] for p in all_pts) * 1.1
+                ref_cost = max(p["ann_cost"] for p in all_pts) * 1.1
                 reference_point = {"rmse": ref_rmse, "cost": ref_cost}
                 hv = calc_hypervolume(pareto["smart_pilot"], reference_point)
 
@@ -1000,7 +995,7 @@ def render_tab_heatmap(params: dict, data: pd.DataFrame,
             # 顯示使用的參考點數值
             st.caption(
                 f"參考點：RMSE={ref_rmse:.5f}，Cost={ref_cost:.6f} "
-                f"（Threshold-only 最差點 × {params['ref_multiplier']}）"
+                f"（Threshold-only 最差點 × 1.1）"
             )
 
             # 和 Grid Search 最佳結果比較
