@@ -44,8 +44,6 @@ st.set_page_config(
 
 # 快取路徑
 GRID_CACHE_PATH = "data/cache/grid_search_results.json"
-SLSQP_CACHE_PATH = "data/cache/slsqp_results.json"
-CMA_ES_CACHE_PATH = "data/cache/cma_es_results.json"
 
 
 # =============================================================================
@@ -83,24 +81,6 @@ def load_grid_cache() -> dict:
     """載入 Grid Search 快取"""
     if os.path.exists(GRID_CACHE_PATH):
         with open(GRID_CACHE_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return None
-
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def load_slsqp_cache() -> dict:
-    """載入 SLSQP 快取"""
-    if os.path.exists(SLSQP_CACHE_PATH):
-        with open(SLSQP_CACHE_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return None
-
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def load_cma_es_cache() -> dict:
-    """載入 CMA-ES 快取"""
-    if os.path.exists(CMA_ES_CACHE_PATH):
-        with open(CMA_ES_CACHE_PATH, "r", encoding="utf-8") as f:
             return json.load(f)
     return None
 
@@ -273,45 +253,33 @@ def render_sidebar() -> dict:
         )
 
     # =========================================================================
-    # 區塊 3.6：CMA-ES 設定
+    # 區塊 3.6：貝氏最佳化設定
     # =========================================================================
-    st.sidebar.header("🔍 CMA-ES 設定")
+    st.sidebar.header("🔍 貝氏最佳化設定")
 
-    # Kp 上下限
     col1, col2 = st.sidebar.columns(2)
     with col1:
-        cma_kp_min = st.number_input("Kp 下限", value=kp_min,
-                                      min_value=0.001, format="%.3f")
+        bayes_kp_min = st.number_input("Kp 下限", value=0.01, min_value=0.001,
+                                        step=0.01, format="%.3f", key="bayes_kp_min")
+        bayes_kd_min = st.number_input("Kd 下限", value=0.01, min_value=0.001,
+                                        step=0.01, format="%.3f", key="bayes_kd_min")
     with col2:
-        cma_kp_max = st.number_input("Kp 上限", value=2.0,
-                                      min_value=0.1, format="%.1f")
+        bayes_kp_max = st.number_input("Kp 上限", value=5.0, min_value=0.1,
+                                        step=0.5, format="%.1f", key="bayes_kp_max")
+        bayes_kd_max = st.number_input("Kd 上限", value=5.0, min_value=0.1,
+                                        step=0.5, format="%.1f", key="bayes_kd_max")
 
-    # Kd 上下限
     col1, col2 = st.sidebar.columns(2)
     with col1:
-        cma_kd_min = st.number_input("Kd 下限", value=kd_min,
-                                      min_value=0.001, format="%.3f")
+        bayes_q_min = st.number_input("Q 下限", value=0.00001, min_value=0.000001,
+                                       format="%.5f", key="bayes_q_min")
     with col2:
-        cma_kd_max = st.number_input("Kd 上限", value=2.0,
-                                      min_value=0.1, format="%.1f")
+        bayes_q_max = st.number_input("Q 上限", value=1.0, min_value=0.00001,
+                                       format="%.4f", key="bayes_q_max")
 
-    # Q 上下限
-    col1, col2 = st.sidebar.columns(2)
-    with col1:
-        cma_q_min = st.number_input("Q 下限", value=q_min,
-                                     min_value=0.000001, format="%.5f")
-    with col2:
-        cma_q_max = st.number_input("Q 上限", value=q_max,
-                                     min_value=0.00001, format="%.4f")
-
-    # 搜索設定
-    col1, col2 = st.sidebar.columns(2)
-    with col1:
-        cma_maxiter = st.number_input("最多幾輪", value=100,
-                                       min_value=10, step=10)
-    with col2:
-        cma_popsize = st.number_input("每輪幾個點", value=10,
-                                       min_value=5, step=5)
+    bayes_n_trials = st.sidebar.number_input(
+        "試驗次數 (trials)", value=50, min_value=10, step=10, key="bayes_n_trials"
+    )
 
     # =========================================================================
     # 區塊 4：執行計算
@@ -396,117 +364,71 @@ def render_sidebar() -> dict:
             f"Q={best['q']:.5f}, HV={best['hypervolume'] * 10000:.4f} %%"
         )
 
-    # 執行 CMA-ES 全域最佳化按鈕（雙起點）
-    if st.sidebar.button("▶ 執行 CMA-ES 全域最佳化（約 5-10 分鐘）", type="primary"):
-        # 1. 載入資料（含暖機資料）
+    if st.sidebar.button("▶ 執行貝氏最佳化（約 3-8 分鐘）", type="primary"):
         with st.spinner("載入資料..."):
-            result = load_data(
+            result_data = load_data(
                 tickers=[ticker1, ticker2],
                 start_date=str(start_date),
                 end_date=str(end_date),
                 warmup_days=warmup,
             )
-            full_backtest = result["backtest_data"]
-            warmup_prices_stock = result["warmup_data"][ticker1].values
-            warmup_prices_bond = result["warmup_data"][ticker2].values
-            prices_stock = full_backtest[ticker1].values
-            prices_bond = full_backtest[ticker2].values
-            dates = full_backtest.index.tolist()
-            rets_stock = np.diff(prices_stock) / prices_stock[:-1]
-            rets_bond = np.diff(prices_bond) / prices_bond[:-1]
-            prices_stock = prices_stock[1:]
-            prices_bond = prices_bond[1:]
-            dates = dates[1:]
+            full_backtest  = result_data["backtest_data"]
+            wm_prices_stock = result_data["warmup_data"][ticker1].values
+            wm_prices_bond  = result_data["warmup_data"][ticker2].values
+            prices_stock_bt = full_backtest[ticker1].values
+            prices_bond_bt  = full_backtest[ticker2].values
+            dates_bt        = full_backtest.index.tolist()
+            rets_stock_bt   = np.diff(prices_stock_bt) / prices_stock_bt[:-1]
+            rets_bond_bt    = np.diff(prices_bond_bt)  / prices_bond_bt[:-1]
+            prices_stock_bt = prices_stock_bt[1:]
+            prices_bond_bt  = prices_bond_bt[1:]
+            dates_bt        = dates_bt[1:]
 
-        # 2. 執行 CMA-ES 雙起點
         t0 = time.time()
-        from core.optimizer import run_cma_es
-
-        with st.spinner("CMA-ES 第一輪搜索（從左下角出發）..."):
-            result1 = run_cma_es(
-                rets_stock, rets_bond, prices_stock, prices_bond, dates,
+        with st.spinner(f"貝氏最佳化中（{int(bayes_n_trials)} trials）..."):
+            from core.optimizer import run_bayesian_opt
+            bayes_result = run_bayesian_opt(
+                rets_stock_bt, rets_bond_bt,
+                prices_stock_bt, prices_bond_bt, dates_bt,
                 target_w=target_w,
                 fee_rate=fee_rate,
                 deadband_values=np.linspace(db_min, db_max, int(db_points)).tolist(),
                 kf_r=kf_r,
                 warmup=warmup,
+                warmup_prices_stock=wm_prices_stock,
+                warmup_prices_bond=wm_prices_bond,
+                ref_rmse=norm_ref_rmse_pct / 100,
+                ref_cost=norm_ref_cost_pct / 100,
+                kp_min=bayes_kp_min, kp_max=bayes_kp_max,
+                kd_min=bayes_kd_min, kd_max=bayes_kd_max,
+                q_min=bayes_q_min,   q_max=bayes_q_max,
+                n_trials=int(bayes_n_trials),
+                n_jobs=n_jobs,
+                d_clip=d_clip,
+                output_clip=output_clip,
                 ref_multiplier=ref_multiplier,
-                kp_min=cma_kp_min,
-                kp_max=cma_kp_max,
-                kd_min=cma_kd_min,
-                kd_max=cma_kd_max,
-                q_min=cma_q_min,
-                q_max=cma_q_max,
-                x0=[cma_kp_min, cma_kd_min, np.log(cma_q_min)],
-                maxiter=int(cma_maxiter),
-                popsize=int(cma_popsize),
-                warmup_prices_stock=warmup_prices_stock,
-                warmup_prices_bond=warmup_prices_bond,
             )
-
-        with st.spinner("CMA-ES 第二輪搜索（從右上角出發）..."):
-            result2 = run_cma_es(
-                rets_stock, rets_bond, prices_stock, prices_bond, dates,
-                target_w=target_w,
-                fee_rate=fee_rate,
-                deadband_values=np.linspace(db_min, db_max, int(db_points)).tolist(),
-                kf_r=kf_r,
-                warmup=warmup,
-                ref_multiplier=ref_multiplier,
-                kp_min=cma_kp_min,
-                kp_max=cma_kp_max,
-                kd_min=cma_kd_min,
-                kd_max=cma_kd_max,
-                q_min=cma_q_min,
-                q_max=cma_q_max,
-                x0=[cma_kp_max, cma_kd_max, np.log(cma_q_max)],
-                maxiter=int(cma_maxiter),
-                popsize=int(cma_popsize),
-                warmup_prices_stock=warmup_prices_stock,
-                warmup_prices_bond=warmup_prices_bond,
-            )
-
         elapsed = time.time() - t0
 
-        # 取超體積較大的結果
-        best_result = result1 if result1["hypervolume"] > result2["hypervolume"] else result2
-
-        # 3. 儲存 JSON
-        cache_path = Path("data/cache/cma_es_results.json")
+        cache_path = Path("data/cache/bayesian_opt_results.json")
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         with open(cache_path, "w", encoding="utf-8") as f:
             json.dump({
-                "best": {
-                    "kp": best_result["kp"],
-                    "kd": best_result["kd"],
-                    "q": best_result["q"],
-                    "hypervolume": best_result["hypervolume"],
-                    "hypervolume_pct": best_result["hypervolume_pct"],
-                    "iterations": best_result["iterations"],
-                    "evaluations": best_result["evaluations"],
-                },
-                "result1": {
-                    "kp": result1["kp"], "kd": result1["kd"], "q": result1["q"],
-                    "hypervolume": result1["hypervolume"],
-                    "hypervolume_pct": result1["hypervolume_pct"],
-                },
-                "result2": {
-                    "kp": result2["kp"], "kd": result2["kd"], "q": result2["q"],
-                    "hypervolume": result2["hypervolume"],
-                    "hypervolume_pct": result2["hypervolume_pct"],
-                },
+                "kp": bayes_result["kp"],
+                "kd": bayes_result["kd"],
+                "q":  bayes_result["q"],
+                "hypervolume": bayes_result["hypervolume"],
+                "hypervolume_x10000": bayes_result["hypervolume_x10000"],
+                "n_trials": bayes_result["n_trials"],
             }, f, ensure_ascii=False, indent=2)
 
-        # 4. 清除快取
-        load_cma_es_cache.clear()
         st.sidebar.success(
-            f"CMA-ES 完成！耗時 {elapsed:.1f} 秒\n"
-            f"第一輪：HV={result1['hypervolume_pct']:.4f} %%\n"
-            f"第二輪：HV={result2['hypervolume_pct']:.4f} %%\n"
-            f"最佳：Kp={best_result['kp']:.3f}, "
-            f"Kd={best_result['kd']:.3f}, "
-            f"Q={best_result['q']:.6f}, "
-            f"HV={best_result['hypervolume_pct']:.4f} %%"
+            f"貝氏最佳化完成！耗時 {elapsed:.1f} 秒\n"
+            f"最佳：Kp={bayes_result['kp']:.3f}, "
+            f"Kd={bayes_result['kd']:.3f}, "
+            f"Q={bayes_result['q']:.6f}\n"
+            f"HV={bayes_result['hypervolume']:.6f}"
+            f"（×10000 = {bayes_result['hypervolume_x10000']:.4f}）"
         )
 
     # =========================================================================
@@ -541,12 +463,12 @@ def render_sidebar() -> dict:
         else:
             st.write("❌ grid_search_results.json（尚未計算）")
 
-        cma_path = Path("data/cache/cma_es_results.json")
-        if cma_path.exists():
-            size_kb = cma_path.stat().st_size // 1024
-            st.write(f"✅ cma_es_results.json（{size_kb} KB）")
+        bayes_path = Path("data/cache/bayesian_opt_results.json")
+        if bayes_path.exists():
+            size_kb = bayes_path.stat().st_size // 1024
+            st.write(f"✅ bayesian_opt_results.json（{size_kb} KB）")
         else:
-            st.write("❌ cma_es_results.json（尚未計算）")
+            st.write("❌ bayesian_opt_results.json（尚未計算）")
 
         col1, col2 = st.columns(2)
         with col1:
@@ -556,11 +478,10 @@ def render_sidebar() -> dict:
                     load_grid_cache.clear()
                     st.warning("已刪除，需重新執行 Grid Search")
         with col2:
-            if st.button("刪除 CMA-ES"):
-                if cma_path.exists():
-                    cma_path.unlink()
-                    load_cma_es_cache.clear()
-                    st.warning("已刪除，需重新執行 CMA-ES")
+            if st.button("刪除貝氏最佳化"):
+                if bayes_path.exists():
+                    bayes_path.unlink()
+                    st.warning("已刪除，需重新執行貝氏最佳化")
 
     # =========================================================================
     # 回傳參數
@@ -586,14 +507,13 @@ def render_sidebar() -> dict:
         "d_clip": d_clip,
         "output_clip": output_clip,
         "ref_multiplier": ref_multiplier,
-        "cma_kp_min": cma_kp_min,
-        "cma_kp_max": cma_kp_max,
-        "cma_kd_min": cma_kd_min,
-        "cma_kd_max": cma_kd_max,
-        "cma_q_min": cma_q_min,
-        "cma_q_max": cma_q_max,
-        "cma_maxiter": cma_maxiter,
-        "cma_popsize": cma_popsize,
+        "bayes_kp_min": bayes_kp_min,
+        "bayes_kp_max": bayes_kp_max,
+        "bayes_kd_min": bayes_kd_min,
+        "bayes_kd_max": bayes_kd_max,
+        "bayes_q_min":  bayes_q_min,
+        "bayes_q_max":  bayes_q_max,
+        "bayes_n_trials": bayes_n_trials,
         "norm_ref_rmse": norm_ref_rmse_pct / 100,
         "norm_ref_cost": norm_ref_cost_pct / 100,
     }
@@ -950,47 +870,29 @@ def render_tab_heatmap(params: dict, data: pd.DataFrame,
     with col4:
         st.metric("Hypervolume", f"{best['hypervolume'] * 10000:.4f} %%")
 
-    # CMA-ES 結果
-    cma_cache = load_cma_es_cache()
-    if cma_cache is not None:
+    # 貝氏最佳化結果
+    bayes_path = Path("data/cache/bayesian_opt_results.json")
+    if bayes_path.exists():
+        with open(bayes_path, "r", encoding="utf-8") as f:
+            bayes_cache = json.load(f)
         st.markdown("---")
-        st.subheader("CMA-ES 全域最佳化結果")
-
-        # 支援新格式（best/result1/result2）和舊格式（直接存 kp/kd/q）
-        if "best" in cma_cache:
-            cma_best = cma_cache["best"]
-            r1 = cma_cache.get("result1", {})
-            r2 = cma_cache.get("result2", {})
-
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.metric("Kp", f"{cma_best['kp']:.3f}")
-            with col2:
-                st.metric("Kd", f"{cma_best['kd']:.3f}")
-            with col3:
-                st.metric("Q", f"{cma_best['q']:.6f}")
-            with col4:
-                st.metric("Hypervolume", f"{cma_best['hypervolume'] * 10000:.4f} %%")
-
-            # 顯示雙起點結果比較
-            if r1 and r2:
-                st.caption(
-                    f"第一輪（左下角出發）：HV={r1['hypervolume_pct']:.4f} %% | "
-                    f"第二輪（右上角出發）：HV={r2['hypervolume_pct']:.4f} %%"
-                )
-        else:
-            # 舊格式相容
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.metric("Kp", f"{cma_cache['kp']:.3f}")
-            with col2:
-                st.metric("Kd", f"{cma_cache['kd']:.3f}")
-            with col3:
-                st.metric("Q", f"{cma_cache['q']:.6f}")
-            with col4:
-                st.metric("Hypervolume", f"{cma_cache['hypervolume'] * 10000:.4f} %%")
+        st.subheader("貝氏最佳化結果")
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Kp", f"{bayes_cache['kp']:.3f}")
+        with col2:
+            st.metric("Kd", f"{bayes_cache['kd']:.3f}")
+        with col3:
+            st.metric("Q",  f"{bayes_cache['q']:.6f}")
+        with col4:
+            st.metric(
+                "Hypervolume",
+                f"{bayes_cache['hypervolume']:.6f}",
+                help=f"×10000 = {bayes_cache['hypervolume_x10000']:.4f}"
+            )
+        st.caption(f"試驗次數：{bayes_cache.get('n_trials', 'N/A')}")
     else:
-        st.info("尚未計算 CMA-ES，請在側邊欄執行 CMA-ES 全域最佳化。")
+        st.info("尚未執行貝氏最佳化，請在側邊欄執行。")
 
     # =========================================================================
     # 單點快速測試

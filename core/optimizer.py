@@ -3,14 +3,12 @@ optimizer.py
 
 參數最佳化模組：
 1. Grid Search：產生三維熱力圖數據（X=Kp, Y=Kd, 切片=Q）
-2. SLSQP：精確找最佳 (Kp, Kd, Q)，固定 deadband
+2. Bayesian Opt：使用 optuna TPE 貝氏最佳化尋找最大化超體積的 (Kp, Kd, Q)
 
-最佳化目標：最小化追蹤誤差 RMSE
-約束條件：總交易成本 Cost ≤ cost_limit
+最佳化目標：最大化超體積（Hypervolume）
 """
 
 import numpy as np
-from scipy.optimize import minimize
 from typing import List, Dict, Optional
 from joblib import Parallel, delayed
 
@@ -168,11 +166,11 @@ def find_best_from_grid(grid_results: List[dict]) -> dict:
 
 
 # ─────────────────────────────────────────
-# SLSQP 精確最佳化
+# Bayesian Optimization（optuna TPE）
 # ─────────────────────────────────────────
 
 
-def run_slsqp(
+def run_bayesian_opt(
     rets_stock: np.ndarray,
     rets_bond: np.ndarray,
     prices_stock: np.ndarray,
@@ -180,238 +178,118 @@ def run_slsqp(
     dates: list,
     target_w: float = 0.6,
     fee_rate: float = 0.003,
-    deadband_values: List[float] = None,
-    initial_params: dict = None,
-    reference_point: dict = None,
+    deadband_values: list = None,
     kf_r: float = 0.005,
-    warmup: int = 30,
-    d_clip: float = 0.15,
-    output_clip: float = 0.2,
+    warmup: int = 20,
     warmup_prices_stock: np.ndarray = None,
     warmup_prices_bond: np.ndarray = None,
-) -> List[dict]:
-    """
-    SLSQP 精確最佳化。
-
-    流程：
-    - 對每個 deadband，固定 deadband，用 SLSQP 找最佳 (Kp, Kd, Q)
-    - 目標：最小化 RMSE（追蹤誤差）
-    - 每個 deadband 得到一個最佳參數組合和一個 (RMSE, Cost) 點
-    - 所有點連起來就是 Smart Pilot 的 Pareto Frontier
-
-    為什麼對每個 deadband 分別最佳化？
-    因為 deadband 直接控制交易頻率，不應被最佳化到極端值，
-    而是讓使用者選擇可接受的成本區間，再找那個區間內最好的參數。
-
-    Args:
-        deadband_values: 要掃描的 deadband 列表，預設 20 個點 [0.005 ~ 0.10]
-        initial_params: 起始點 {"kp", "kd", "q"}，建議從 Grid Search 最佳結果傳入
-        reference_point: 超體積參考點 {"rmse", "cost"}，None 則動態設置
-
-    Returns:
-        List of dict，每個 deadband 對應一個最佳結果：
-        [{"deadband", "kp", "kd", "q", "rmse", "cost", "ann_cost", "success", "message"}, ...]
-        可直接用於畫 Pareto Frontier
-    """
-    from core.benchmark import run_smart_pilot as _run_sp
-
-    if deadband_values is None:
-        deadband_values = np.linspace(0.005, 0.10, 20).tolist()
-    if initial_params is None:
-        initial_params = {"kp": 0.5, "kd": 0.5, "q": 0.001}
-
-    bounds = [
-        (0.01, 2.0),                          # kp
-        (0.01, 2.0),                          # kd
-        (np.log(1e-5), np.log(1.0)),          # log_q（log scale 防止負值）
-    ]
-
-    all_results = []
-
-    for deadband in deadband_values:
-        deadband = float(deadband)
-
-        def objective(params):
-            kp, kd, log_q = params
-            q = np.exp(log_q)
-            r = _run_sp(
-                rets_stock, rets_bond, prices_stock, prices_bond, dates,
-                target_w=target_w, fee_rate=fee_rate,
-                kf_q=q, kf_r=kf_r, kp=kp, kd=kd, deadband=deadband,
-                warmup=warmup, d_clip=d_clip, output_clip=output_clip,
-                warmup_prices_stock=warmup_prices_stock,
-                warmup_prices_bond=warmup_prices_bond,
-            )
-            return r["rmse"]  # 最小化追蹤誤差
-
-        x0 = [
-            initial_params["kp"],
-            initial_params["kd"],
-            np.log(initial_params["q"]),
-        ]
-
-        result = minimize(
-            objective, x0,
-            method="SLSQP",
-            bounds=bounds,
-            options={"maxiter": 200, "ftol": 1e-6},
-        )
-
-        opt_kp = float(result.x[0])
-        opt_kd = float(result.x[1])
-        opt_q = float(np.exp(result.x[2]))
-
-        final = _run_sp(
-            rets_stock, rets_bond, prices_stock, prices_bond, dates,
-            target_w=target_w, fee_rate=fee_rate,
-            kf_q=opt_q, kf_r=kf_r, kp=opt_kp, kd=opt_kd, deadband=deadband,
-            warmup=warmup, d_clip=d_clip, output_clip=output_clip,
-            warmup_prices_stock=warmup_prices_stock,
-            warmup_prices_bond=warmup_prices_bond,
-        )
-
-        all_results.append({
-            "deadband": deadband,
-            "kp": opt_kp,
-            "kd": opt_kd,
-            "q": opt_q,
-            "rmse": final["rmse"],
-            "cost": final["cost"],
-            "ann_cost": final["cost"] / (len(dates) / 252),
-            "success": bool(result.success),
-            "message": result.message,
-        })
-
-    return all_results
-
-
-# ─────────────────────────────────────────
-# CMA-ES 全域最佳化
-# ─────────────────────────────────────────
-
-
-def run_cma_es(
-    rets_stock: np.ndarray,
-    rets_bond: np.ndarray,
-    prices_stock: np.ndarray,
-    prices_bond: np.ndarray,
-    dates: list,
-    target_w: float = 0.6,
-    fee_rate: float = 0.003,
-    deadband_values: List[float] = None,
-    kf_r: float = 0.005,
-    warmup: int = 30,
+    ref_rmse: float = None,
+    ref_cost: float = None,
+    kp_min: float = 0.01, kp_max: float = 5.0,
+    kd_min: float = 0.01, kd_max: float = 5.0,
+    q_min: float = 1e-5,  q_max: float = 1.0,
+    n_trials: int = 50,
+    n_jobs: int = 1,
     d_clip: float = 0.15,
     output_clip: float = 0.2,
     ref_multiplier: float = 1.1,
-    kp_min: float = 0.01,
-    kp_max: float = 5.0,
-    kd_min: float = 0.01,
-    kd_max: float = 5.0,
-    q_min: float = 1e-5,
-    q_max: float = 1.0,
-    x0: List[float] = None,
-    sigma0: float = 0.5,
-    maxiter: int = 100,
-    popsize: int = 10,
-    warmup_prices_stock: np.ndarray = None,
-    warmup_prices_bond: np.ndarray = None,
 ) -> dict:
     """
-    CMA-ES 全域最佳化。
+    使用 optuna TPE 貝氏最佳化尋找最大化超體積的 (Kp, Kd, Q)。
 
-    最大化超體積（傳入負值給 CMA-ES 最小化）。
-    搜尋最佳 (Kp, Kd, Q) 參數組合。
-
-    Args:
-        x0: 起始點 [kp, kd, log_q]，預設 [2.0, 1.5, log(0.001)]
-        sigma0: 初始步長
-        maxiter: 最大迭代次數
-        popsize: 族群大小
-
-    Returns:
-        dict 包含最佳參數、超體積、Pareto frontier 等
+    如果 ref_rmse 和 ref_cost 都不是 None：
+      使用標準化 HV，標準化後參考點為 (1, 1)
+    否則：
+      使用動態參考點（Threshold-only 最差點 × ref_multiplier）
     """
-    import cma
-    from core.benchmark import scan_pareto_frontier, run_threshold_only
+    import optuna
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
 
-    if deadband_values is None:
-        deadband_values = np.linspace(0.005, 0.10, 15).tolist()
+    from core.benchmark import scan_pareto_frontier
 
-    # 先算 Threshold-only 參考點
-    to_frontier = []
-    for tol in np.linspace(0.005, 0.15, 15):
-        r = run_threshold_only(rets_stock, rets_bond, dates,
-                               target_w=target_w, drift_tolerance=float(tol), fee_rate=fee_rate,
-                               warmup=warmup)
-        to_frontier.append({"rmse": r["rmse"], "cost": r["cost"]})
+    use_norm = (ref_rmse is not None) and (ref_cost is not None)
 
-    ref_rmse = max(p["rmse"] for p in to_frontier) * ref_multiplier
-    ref_cost = max(p["cost"] for p in to_frontier) * ref_multiplier
-    reference_point = {"rmse": ref_rmse, "cost": ref_cost}
+    # 動態模式：預先計算參考點
+    if not use_norm:
+        to_scan = scan_pareto_frontier(
+            rets_stock, rets_bond, prices_stock, prices_bond, dates,
+            target_w=target_w, fee_rate=fee_rate,
+            kf_q=0.001, kf_r=kf_r, kp=1.0, kd=1.0,
+            deadband_values=deadband_values,
+            warmup=warmup,
+            warmup_prices_stock=warmup_prices_stock,
+            warmup_prices_bond=warmup_prices_bond,
+        )
+        to_pts = to_scan["threshold_only"]
+        dyn_ref_rmse = max(p["rmse"] for p in to_pts) * ref_multiplier
+        dyn_ref_cost = max(p["ann_cost"] for p in to_pts) * ref_multiplier
 
-    def objective(params):
-        kp, kd, log_q = params
-        q = float(np.exp(np.clip(log_q, np.log(q_min), np.log(q_max))))
-        kp = float(np.clip(kp, kp_min, kp_max))
-        kd = float(np.clip(kd, kd_min, kd_max))
+    def objective(trial):
+        kp    = trial.suggest_float("kp", kp_min, kp_max)
+        kd    = trial.suggest_float("kd", kd_min, kd_max)
+        log_q = trial.suggest_float("log_q", np.log(q_min), np.log(q_max))
+        q     = np.exp(log_q)
+
         pareto = scan_pareto_frontier(
             rets_stock, rets_bond, prices_stock, prices_bond, dates,
             target_w=target_w, fee_rate=fee_rate,
             kf_q=q, kf_r=kf_r, kp=kp, kd=kd,
             deadband_values=deadband_values,
-            warmup=warmup, d_clip=d_clip, output_clip=output_clip,
+            warmup=warmup,
             warmup_prices_stock=warmup_prices_stock,
             warmup_prices_bond=warmup_prices_bond,
+            d_clip=d_clip, output_clip=output_clip,
         )
-        hv = calc_hypervolume(pareto["smart_pilot"], reference_point)
-        return -hv  # 最大化超體積 = 最小化負超體積
 
-    # 起點預設（中間值）
-    if x0 is None:
-        x0 = [(kp_min + kp_max) / 2, (kd_min + kd_max) / 2, np.log(np.sqrt(q_min * q_max))]
+        sp_pts = pareto["smart_pilot"]
+        if not sp_pts:
+            return 0.0
 
-    # bounds
-    lower_bounds = [kp_min, kd_min, np.log(q_min)]
-    upper_bounds = [kp_max, kd_max, np.log(q_max)]
+        if use_norm:
+            norm_pts = [
+                {"rmse": p["rmse"] / ref_rmse, "cost": p["ann_cost"] / ref_cost}
+                for p in sp_pts
+            ]
+            hv = calc_hypervolume(norm_pts, {"rmse": 1.0, "cost": 1.0})
+        else:
+            hv = calc_hypervolume(
+                [{"rmse": p["rmse"], "cost": p["ann_cost"]} for p in sp_pts],
+                {"rmse": dyn_ref_rmse, "cost": dyn_ref_cost}
+            )
+        return hv
 
-    opts = {
-        "maxiter": maxiter,
-        "popsize": popsize,
-        "bounds": [lower_bounds, upper_bounds],
-        "verbose": -9,  # 抑制輸出
-    }
+    study = optuna.create_study(
+        direction="maximize",
+        sampler=optuna.samplers.TPESampler(seed=42),
+    )
+    study.optimize(objective, n_trials=n_trials, n_jobs=n_jobs, show_progress_bar=False)
 
-    es = cma.CMAEvolutionStrategy(x0, sigma0, opts)
-    es.optimize(objective)
+    best_params = study.best_params
+    best_kp = best_params["kp"]
+    best_kd = best_params["kd"]
+    best_q  = np.exp(best_params["log_q"])
+    best_hv = study.best_value
 
-    best_params = es.result.xbest
-    opt_kp = float(np.clip(best_params[0], kp_min, kp_max))
-    opt_kd = float(np.clip(best_params[1], kd_min, kd_max))
-    opt_q = float(np.exp(np.clip(best_params[2], np.log(q_min), np.log(q_max))))
-    best_hv = -es.result.fbest
-
-    # 用最佳參數跑一次完整 Pareto
-    pareto = scan_pareto_frontier(
+    # 用最佳參數跑完整 Pareto frontier
+    final_pareto = scan_pareto_frontier(
         rets_stock, rets_bond, prices_stock, prices_bond, dates,
         target_w=target_w, fee_rate=fee_rate,
-        kf_q=opt_q, kf_r=kf_r, kp=opt_kp, kd=opt_kd,
+        kf_q=best_q, kf_r=kf_r, kp=best_kp, kd=best_kd,
         deadband_values=deadband_values,
-        warmup=warmup, d_clip=d_clip, output_clip=output_clip,
+        warmup=warmup,
         warmup_prices_stock=warmup_prices_stock,
         warmup_prices_bond=warmup_prices_bond,
+        d_clip=d_clip, output_clip=output_clip,
     )
 
     return {
-        "kp": opt_kp,
-        "kd": opt_kd,
-        "q": opt_q,
+        "kp": best_kp,
+        "kd": best_kd,
+        "q": best_q,
         "hypervolume": best_hv,
-        "hypervolume_pct": best_hv * 10000,
-        "pareto": pareto,
-        "iterations": es.result.iterations,
-        "evaluations": es.result.evaluations,
-        "success": True,
+        "hypervolume_x10000": best_hv * 10000,
+        "n_trials": n_trials,
+        "pareto": final_pareto,
     }
 
 
