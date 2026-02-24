@@ -38,7 +38,7 @@ def _single_grid_run(
     單組 (Kp, Kd, Q) 的完整評估，供平行化使用。
 
     掃描多個 deadband → 得到 Smart Pilot frontier → 計算超體積。
-    同時也掃描 Bang-Bang frontier 作為比較基準（共用同一個參考點）。
+    同時也掃描 Threshold-only frontier 作為比較基準（共用同一個參考點）。
 
     超體積越大 → 這組參數在整個 deadband 範圍內表現越好。
     """
@@ -120,16 +120,16 @@ def run_grid_search(
     if deadband_values is None:
         deadband_values = np.linspace(0.005, 0.10, 15).tolist()
 
-    # 先算 Bang-Bang frontier 取得動態參考點
-    from core.benchmark import run_bangbang
-    bb_frontier = []
+    # 先算 Threshold-only frontier 取得動態參考點
+    from core.benchmark import run_threshold_only
+    to_frontier = []
     for tol in np.linspace(0.005, 0.15, 15):
-        r = run_bangbang(rets_stock, rets_bond, dates,
-                         target_w=target_w, drift_tolerance=float(tol), fee_rate=fee_rate,
-                         warmup=warmup)
-        bb_frontier.append({"rmse": r["rmse"], "cost": r["cost"]})
+        r = run_threshold_only(rets_stock, rets_bond, dates,
+                               target_w=target_w, drift_tolerance=float(tol), fee_rate=fee_rate,
+                               warmup=warmup)
+        to_frontier.append({"rmse": r["rmse"], "cost": r["cost"]})
 
-    all_pts = bb_frontier
+    all_pts = to_frontier
     ref_rmse = max(p["rmse"] for p in all_pts) * ref_multiplier
     ref_cost = max(p["cost"] for p in all_pts) * ref_multiplier
     reference_point = {"rmse": ref_rmse, "cost": ref_cost}
@@ -333,21 +333,21 @@ def run_cma_es(
         dict 包含最佳參數、超體積、Pareto frontier 等
     """
     import cma
-    from core.benchmark import scan_pareto_frontier, run_bangbang
+    from core.benchmark import scan_pareto_frontier, run_threshold_only
 
     if deadband_values is None:
         deadband_values = np.linspace(0.005, 0.10, 15).tolist()
 
-    # 先算 Bang-Bang 參考點
-    bb_frontier = []
+    # 先算 Threshold-only 參考點
+    to_frontier = []
     for tol in np.linspace(0.005, 0.15, 15):
-        r = run_bangbang(rets_stock, rets_bond, dates,
-                         target_w=target_w, drift_tolerance=float(tol), fee_rate=fee_rate,
-                         warmup=warmup)
-        bb_frontier.append({"rmse": r["rmse"], "cost": r["cost"]})
+        r = run_threshold_only(rets_stock, rets_bond, dates,
+                               target_w=target_w, drift_tolerance=float(tol), fee_rate=fee_rate,
+                               warmup=warmup)
+        to_frontier.append({"rmse": r["rmse"], "cost": r["cost"]})
 
-    ref_rmse = max(p["rmse"] for p in bb_frontier) * ref_multiplier
-    ref_cost = max(p["cost"] for p in bb_frontier) * ref_multiplier
+    ref_rmse = max(p["rmse"] for p in to_frontier) * ref_multiplier
+    ref_cost = max(p["cost"] for p in to_frontier) * ref_multiplier
     reference_point = {"rmse": ref_rmse, "cost": ref_cost}
 
     def objective(params):
@@ -478,32 +478,34 @@ def compare_hypervolumes(pareto_data: dict) -> dict:
     Returns:
         {
             "smart_pilot": float,
-            "bangbang": float,
-            "yearly": float,
+            "threshold_only": float,
+            "time_and_threshold": float,
             "reference_point": {"rmse": float, "cost": float},
             "winner": str,
         }
     """
+    tat_pts = [{"rmse": p["rmse"], "cost": p["ann_cost"]}
+               for p in pareto_data["time_and_threshold"]]
     all_points = (
         pareto_data["smart_pilot"] +
-        pareto_data["bangbang"] +
-        [pareto_data["yearly"]]
+        pareto_data["threshold_only"] +
+        tat_pts
     )
     ref_rmse = max(p["rmse"] for p in all_points) * 1.1
     ref_cost = max(p["cost"] for p in all_points) * 1.1
     reference_point = {"rmse": ref_rmse, "cost": ref_cost}
 
     hv_sp = calc_hypervolume(pareto_data["smart_pilot"], reference_point)
-    hv_bb = calc_hypervolume(pareto_data["bangbang"], reference_point)
-    hv_yr = calc_hypervolume([pareto_data["yearly"]], reference_point)
+    hv_to = calc_hypervolume(pareto_data["threshold_only"], reference_point)
+    hv_tat = calc_hypervolume(tat_pts, reference_point)
 
-    scores = {"smart_pilot": hv_sp, "bangbang": hv_bb, "yearly": hv_yr}
+    scores = {"smart_pilot": hv_sp, "threshold_only": hv_to, "time_and_threshold": hv_tat}
     winner = max(scores, key=scores.get)
 
     return {
         "smart_pilot": hv_sp,
-        "bangbang": hv_bb,
-        "yearly": hv_yr,
+        "threshold_only": hv_to,
+        "time_and_threshold": hv_tat,
         "reference_point": reference_point,
         "winner": winner,
     }

@@ -2,8 +2,8 @@
 benchmark.py
 
 三個再平衡策略的回測實作：
-- Bang-Bang Control（門檻再平衡）
-- Yearly Rebalance（年度再平衡）
+- Threshold-only（門檻再平衡）
+- Time-and-threshold（時間＋門檻再平衡）
 - Smart Pilot（PD + KF 控制器）
 
 以及 Pareto Frontier 掃描函數。
@@ -92,10 +92,10 @@ def calc_rmse(weights: list, target_w: float) -> float:
     return float(np.sqrt(np.mean((arr - target_w) ** 2)))
 
 
-# ── 策略 A：Bang-Bang Control ─────────────────────────────
+# ── 策略 A：Threshold-only ─────────────────────────────
 
 
-def run_bangbang(
+def run_threshold_only(
     rets_stock: np.ndarray,
     rets_bond: np.ndarray,
     dates: list,
@@ -105,7 +105,7 @@ def run_bangbang(
     warmup: int = 30,
 ) -> dict:
     """
-    Bang-Bang 門檻再平衡策略。
+    Threshold-only 門檻再平衡策略。
     偏離超過 drift_tolerance 時，拉回目標權重。
     """
     n = len(rets_stock)
@@ -155,20 +155,21 @@ def run_bangbang(
     }
 
 
-# ── 策略 B：Yearly Rebalance ─────────────────────────────
+# ── 策略 B：Time-and-threshold ─────────────────────────────
 
 
-def run_yearly(
+def run_time_and_threshold(
     rets_stock: np.ndarray,
     rets_bond: np.ndarray,
     dates: list,
     target_w: float = 0.6,
     fee_rate: float = 0.003,
+    threshold: float = 0.05,
     warmup: int = 30,
 ) -> dict:
     """
-    年度再平衡策略。
-    每年第一個交易日拉回目標權重。
+    Time-and-threshold 再平衡策略。
+    每年第一個交易日檢查，只有當 |curr_w - target_w| > threshold 才執行再平衡。
     """
     n = len(rets_stock)
     wealth = 1.0
@@ -187,15 +188,19 @@ def run_yearly(
         curr_w = val_stock / total
 
         if dates[i].year > current_year:
-            trade_pct = abs(curr_w - target_w)
-            cost = trade_pct * total * fee_rate
-            total -= cost
-            turnover += trade_pct
-            trade_count += 1
             current_year = dates[i].year
-            direction = 1.0 if curr_w < target_w else -1.0
-            actions.append(trade_pct * direction)
-            p_stock = target_w
+            if abs(curr_w - target_w) > threshold:
+                trade_pct = abs(curr_w - target_w)
+                cost = trade_pct * total * fee_rate
+                total -= cost
+                turnover += trade_pct
+                trade_count += 1
+                direction = 1.0 if curr_w < target_w else -1.0
+                actions.append(trade_pct * direction)
+                p_stock = target_w
+            else:
+                p_stock = curr_w
+                actions.append(0.0)
         else:
             p_stock = curr_w
             actions.append(0.0)
@@ -368,13 +373,14 @@ def scan_pareto_frontier(
     output_clip: float = 0.2,
     warmup_prices_stock: np.ndarray = None,
     warmup_prices_bond: np.ndarray = None,
+    threshold_values: List[float] = None,
 ) -> dict:
     """
     掃描不同閾值，生成三個策略的 Pareto Frontier 數據。
 
     Smart Pilot：掃描 deadband（可傳入自訂列表或用 n_points 自動產生）
-    Bang-Bang：掃描 drift_tolerance 從 0.005 到 0.15
-    Yearly：只有一個點（沒有門檻可調，所以只有一個結果）
+    Threshold-only：掃描 drift_tolerance 從 0.005 到 0.15
+    Time-and-threshold：掃描 threshold 從 0.005 到 0.15
 
     Y 軸成本說明：
     - cost：總交易成本（小數）= turnover * fee_rate
@@ -383,19 +389,23 @@ def scan_pareto_frontier(
     Args:
         warmup_prices_stock: 外部暖機資料（回測起始日前的價格序列）
         warmup_prices_bond: 外部暖機資料（回測起始日前的價格序列）
+        threshold_values: Time-and-threshold 掃描閾值列表
 
     Returns:
         {
-            "smart_pilot": [{"rmse", "cost", "ann_cost", "deadband"}, ...],
-            "bangbang":    [{"rmse", "cost", "ann_cost", "tolerance"}, ...],
-            "yearly":      {"rmse", "cost", "ann_cost"},
+            "smart_pilot":        [{"rmse", "cost", "ann_cost", "deadband"}, ...],
+            "threshold_only":     [{"rmse", "cost", "ann_cost", "tolerance"}, ...],
+            "time_and_threshold": [{"rmse", "cost", "ann_cost", "threshold"}, ...],
         }
     """
     n_years = len(dates) / 252.0
-    results = {"smart_pilot": [], "bangbang": [], "yearly": None}
+    results = {"smart_pilot": [], "threshold_only": [], "time_and_threshold": []}
 
     if deadband_values is None:
         deadband_values = np.linspace(0.001, 0.10, n_points).tolist()
+
+    if threshold_values is None:
+        threshold_values = np.linspace(0.005, 0.15, n_points).tolist()
 
     # Smart Pilot
     for deadband in deadband_values:
@@ -414,27 +424,33 @@ def scan_pareto_frontier(
             "deadband": float(deadband),
         })
 
-    # Bang-Bang
+    # Threshold-only
     for tolerance in np.linspace(0.005, 0.15, n_points):
-        r = run_bangbang(
+        r = run_threshold_only(
             rets_stock, rets_bond, dates,
             target_w=target_w, drift_tolerance=float(tolerance), fee_rate=fee_rate,
             warmup=warmup,
         )
-        results["bangbang"].append({
+        results["threshold_only"].append({
             "rmse": r["rmse"],
             "cost": r["cost"],
             "ann_cost": r["cost"] / n_years,
             "tolerance": float(tolerance),
         })
 
-    # Yearly（只有一個點）
-    r = run_yearly(rets_stock, rets_bond, dates, target_w=target_w, fee_rate=fee_rate,
-                   warmup=warmup)
-    results["yearly"] = {
-        "rmse": r["rmse"],
-        "cost": r["cost"],
-        "ann_cost": r["cost"] / n_years,
-    }
+    # Time-and-threshold（掃描 threshold）
+    for threshold in threshold_values:
+        r = run_time_and_threshold(
+            rets_stock, rets_bond, dates,
+            target_w=target_w, fee_rate=fee_rate,
+            threshold=float(threshold),
+            warmup=warmup,
+        )
+        results["time_and_threshold"].append({
+            "rmse": r["rmse"],
+            "cost": r["cost"],
+            "ann_cost": r["cost"] / n_years,
+            "threshold": float(threshold),
+        })
 
     return results

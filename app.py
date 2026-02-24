@@ -26,7 +26,7 @@ from pathlib import Path
 
 from data.data_loader import DataLoader
 from core.benchmark import (
-    run_smart_pilot, run_bangbang, run_yearly,
+    run_smart_pilot, run_threshold_only, run_time_and_threshold,
     scan_pareto_frontier, get_metrics, calc_rmse
 )
 from core.optimizer import calc_hypervolume, compare_hypervolumes
@@ -237,7 +237,7 @@ def render_sidebar() -> dict:
     # =========================================================================
     st.sidebar.header("📐 參考點設定")
     st.sidebar.markdown(
-        "超體積參考點 = Bang-Bang 最差點 × 倍數\n"
+        "超體積參考點 = Threshold-only 最差點 × 倍數\n"
         "倍數越大 → 面積越大，倍數越小 → 比較更嚴格"
     )
     ref_multiplier = st.sidebar.number_input(
@@ -617,22 +617,24 @@ def render_tab_pareto(params: dict, data: pd.DataFrame,
         )
 
     # 計算超體積（使用 ref_multiplier）
-    all_pts = pareto["smart_pilot"] + pareto["bangbang"] + [pareto["yearly"]]
+    tat_pts = [{"rmse": p["rmse"], "cost": p["ann_cost"]}
+               for p in pareto["time_and_threshold"]]
+    all_pts = pareto["smart_pilot"] + pareto["threshold_only"] + tat_pts
     ref_rmse = max(p["rmse"] for p in all_pts) * params["ref_multiplier"]
-    ref_cost = max(p["ann_cost"] for p in all_pts) * params["ref_multiplier"]
+    ref_cost = max(p["cost"] for p in all_pts) * params["ref_multiplier"]
     reference_point = {"rmse": ref_rmse, "cost": ref_cost}
 
     hv_sp = calc_hypervolume(pareto["smart_pilot"], reference_point)
-    hv_bb = calc_hypervolume(pareto["bangbang"], reference_point)
-    hv_yr = calc_hypervolume([pareto["yearly"]], reference_point)
+    hv_to = calc_hypervolume(pareto["threshold_only"], reference_point)
+    hv_tat = calc_hypervolume(tat_pts, reference_point)
 
     # 決定贏家
-    hv_values = {"smart_pilot": hv_sp, "bangbang": hv_bb, "yearly": hv_yr}
+    hv_values = {"smart_pilot": hv_sp, "threshold_only": hv_to, "time_and_threshold": hv_tat}
     winner = max(hv_values, key=hv_values.get)
     hv_comparison = {
         "smart_pilot": hv_sp,
-        "bangbang": hv_bb,
-        "yearly": hv_yr,
+        "threshold_only": hv_to,
+        "time_and_threshold": hv_tat,
         "winner": winner,
         "reference_point": reference_point,
     }
@@ -652,26 +654,27 @@ def render_tab_pareto(params: dict, data: pd.DataFrame,
         hovertemplate="RMSE: %{x:.2f}%<br>Cost: %{y:.3f}%/年<extra></extra>"
     ))
 
-    # Bang-Bang
-    bb_data = pareto["bangbang"]
+    # Threshold-only
+    to_data = pareto["threshold_only"]
     fig.add_trace(go.Scatter(
-        x=[p["rmse"] * 100 for p in bb_data],
-        y=[p["ann_cost"] * 100 for p in bb_data],
+        x=[p["rmse"] * 100 for p in to_data],
+        y=[p["ann_cost"] * 100 for p in to_data],
         mode="lines+markers",
-        name="Bang-Bang",
+        name="Threshold-only",
         line=dict(color="gray", width=1.5, dash="dash"),
         marker=dict(size=5),
         hovertemplate="RMSE: %{x:.2f}%<br>Cost: %{y:.3f}%/年<extra></extra>"
     ))
 
-    # Yearly
-    yr_data = pareto["yearly"]
+    # Time-and-threshold
+    tat_data = pareto["time_and_threshold"]
     fig.add_trace(go.Scatter(
-        x=[yr_data["rmse"] * 100],
-        y=[yr_data["ann_cost"] * 100],
-        mode="markers",
-        name="Yearly",
-        marker=dict(size=12, color="cyan", symbol="star"),
+        x=[p["rmse"] * 100 for p in tat_data],
+        y=[p["ann_cost"] * 100 for p in tat_data],
+        mode="lines+markers",
+        name="Time-and-threshold",
+        line=dict(color="cyan", width=1.5, dash="dot"),
+        marker=dict(size=5),
         hovertemplate="RMSE: %{x:.2f}%<br>Cost: %{y:.3f}%/年<extra></extra>"
     ))
 
@@ -689,17 +692,17 @@ def render_tab_pareto(params: dict, data: pd.DataFrame,
     with col1:
         st.metric("Smart Pilot", f"{hv_comparison['smart_pilot'] * 10000:.4f} %%")
     with col2:
-        st.metric("Bang-Bang", f"{hv_comparison['bangbang'] * 10000:.4f} %%")
+        st.metric("Threshold-only", f"{hv_comparison['threshold_only'] * 10000:.4f} %%")
     with col3:
-        st.metric("Yearly", f"{hv_comparison['yearly'] * 10000:.4f} %%")
+        st.metric("Time-and-threshold", f"{hv_comparison['time_and_threshold'] * 10000:.4f} %%")
 
     winner = hv_comparison["winner"]
     if winner == "smart_pilot":
         st.success(f"Winner: Smart Pilot (超體積最大，Pareto Frontier 最優)")
-    elif winner == "bangbang":
-        st.info(f"Winner: Bang-Bang")
+    elif winner == "threshold_only":
+        st.info(f"Winner: Threshold-only")
     else:
-        st.info(f"Winner: Yearly")
+        st.info(f"Winner: Time-and-threshold")
 
     st.caption(
         f"參考點倍數：{params['ref_multiplier']}x | "
@@ -949,8 +952,8 @@ def render_tab_heatmap(params: dict, data: pd.DataFrame,
                     warmup_prices_bond=warmup_prices_bond,
                 )
 
-                # 計算參考點（用 Bang-Bang 最差點 × ref_multiplier）
-                all_pts = pareto["smart_pilot"] + pareto["bangbang"]
+                # 計算參考點（用 Threshold-only 最差點 × ref_multiplier）
+                all_pts = pareto["smart_pilot"] + pareto["threshold_only"]
                 ref_rmse = max(p["rmse"] for p in all_pts) * params["ref_multiplier"]
                 ref_cost = max(p["ann_cost"] for p in all_pts) * params["ref_multiplier"]
                 reference_point = {"rmse": ref_rmse, "cost": ref_cost}
@@ -995,7 +998,7 @@ def render_tab_heatmap(params: dict, data: pd.DataFrame,
             # 顯示使用的參考點數值
             st.caption(
                 f"參考點：RMSE={ref_rmse:.5f}，Cost={ref_cost:.6f} "
-                f"（Bang-Bang 最差點 × {params['ref_multiplier']}）"
+                f"（Threshold-only 最差點 × {params['ref_multiplier']}）"
             )
 
             # 和 Grid Search 最佳結果比較
