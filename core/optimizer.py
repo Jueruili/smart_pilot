@@ -8,6 +8,7 @@ optimizer.py
 最佳化目標：最大化超體積（Hypervolume）
 """
 
+import os
 import numpy as np
 from typing import List, Dict, Optional
 from joblib import Parallel, delayed
@@ -165,6 +166,101 @@ def find_best_from_grid(grid_results: List[dict]) -> dict:
     return best
 
 
+def run_grid_search_with_progress(
+    rets_stock: np.ndarray,
+    rets_bond: np.ndarray,
+    prices_stock: np.ndarray,
+    prices_bond: np.ndarray,
+    dates: list,
+    target_w: float = 0.6,
+    fee_rate: float = 0.003,
+    kp_range: List[float] = None,
+    kd_range: List[float] = None,
+    q_values: List[float] = None,
+    deadband_values: List[float] = None,
+    n_jobs: int = -1,
+    kf_r: float = 0.005,
+    warmup: int = 30,
+    d_clip: float = 0.15,
+    output_clip: float = 0.2,
+    ref_multiplier: float = 1.1,
+    warmup_prices_stock: np.ndarray = None,
+    warmup_prices_bond: np.ndarray = None,
+    progress_bar=None,
+    status_text=None,
+    total_tasks: int = None,
+) -> List[dict]:
+    """
+    帶進度條的 Grid Search。
+    由於 joblib 平行化不支援直接回呼 Streamlit，
+    改用批次執行（每批 n_jobs 個任務），每批完成後更新進度。
+    """
+    from core.benchmark import run_threshold_only
+
+    if kp_range is None:
+        kp_range = np.linspace(0.1, 1.0, 10).tolist()
+    if kd_range is None:
+        kd_range = np.linspace(0.1, 1.0, 10).tolist()
+    if q_values is None:
+        q_values = [0.0001, 0.001, 0.01]
+    if deadband_values is None:
+        deadband_values = np.linspace(0.005, 0.10, 15).tolist()
+
+    # 先算 Threshold-only 取動態參考點
+    to_frontier = []
+    for tol in np.linspace(0.005, 0.15, 15):
+        r = run_threshold_only(rets_stock, rets_bond, dates,
+                               target_w=target_w, drift_tolerance=float(tol),
+                               fee_rate=fee_rate, warmup=warmup)
+        to_frontier.append({"rmse": r["rmse"], "cost": r["cost"]})
+
+    ref_rmse = max(p["rmse"] for p in to_frontier) * ref_multiplier
+    ref_cost = max(p["cost"] for p in to_frontier) * ref_multiplier
+    reference_point = {"rmse": ref_rmse, "cost": ref_cost}
+
+    tasks = [
+        (kp, kd, q)
+        for q in q_values
+        for kp in kp_range
+        for kd in kd_range
+    ]
+
+    if total_tasks is None:
+        total_tasks = len(tasks)
+
+    # 批次大小：每批至少 1，最多 n_jobs * 2（讓進度更新頻繁）
+    actual_n_jobs = n_jobs if n_jobs > 0 else (os.cpu_count() or 1)
+    batch_size = max(1, actual_n_jobs * 2)
+
+    all_results = []
+    completed = 0
+
+    for batch_start in range(0, len(tasks), batch_size):
+        batch = tasks[batch_start: batch_start + batch_size]
+
+        batch_results = Parallel(n_jobs=n_jobs)(
+            delayed(_single_grid_run)(
+                kp, kd, q,
+                rets_stock, rets_bond, prices_stock, prices_bond,
+                dates, target_w, fee_rate,
+                deadband_values, reference_point,
+                kf_r, warmup, d_clip, output_clip,
+                warmup_prices_stock, warmup_prices_bond,
+            )
+            for kp, kd, q in batch
+        )
+        all_results.extend(batch_results)
+        completed += len(batch)
+
+        # 更新進度
+        if progress_bar is not None:
+            progress_bar.progress(min(completed / total_tasks, 1.0))
+        if status_text is not None:
+            status_text.text(f"Grid Search 進度：{completed}/{total_tasks}")
+
+    return all_results
+
+
 # ─────────────────────────────────────────
 # Bayesian Optimization（optuna TPE）
 # ─────────────────────────────────────────
@@ -193,6 +289,8 @@ def run_bayesian_opt(
     d_clip: float = 0.15,
     output_clip: float = 0.2,
     ref_multiplier: float = 1.1,
+    progress_bar=None,
+    status_text=None,
 ) -> dict:
     """
     使用 optuna TPE 貝氏最佳化尋找最大化超體積的 (Kp, Kd, Q)。
@@ -258,11 +356,29 @@ def run_bayesian_opt(
             )
         return hv
 
+    # 進度條 callback
+    def progress_callback(study, trial):
+        completed = len(study.trials)
+        if progress_bar is not None:
+            progress_bar.progress(min(completed / n_trials, 1.0))
+        if status_text is not None:
+            best_so_far = study.best_value if study.best_value is not None else 0.0
+            status_text.text(
+                f"貝氏最佳化進度：{completed}/{n_trials}  "
+                f"目前最佳 HV={best_so_far:.6f}"
+            )
+
     study = optuna.create_study(
         direction="maximize",
         sampler=optuna.samplers.TPESampler(seed=42),
     )
-    study.optimize(objective, n_trials=n_trials, n_jobs=n_jobs, show_progress_bar=False)
+    study.optimize(
+        objective,
+        n_trials=n_trials,
+        n_jobs=n_jobs,
+        show_progress_bar=False,
+        callbacks=[progress_callback],
+    )
 
     best_params = study.best_params
     best_kp = best_params["kp"]
