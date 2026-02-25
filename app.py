@@ -167,7 +167,26 @@ def render_sidebar() -> dict:
     )
 
     # =========================================================================
-    # 區塊 3：貝氏最佳化設定
+    # 區塊 3：標準化參考點設定
+    # =========================================================================
+    st.sidebar.header("📐 標準化參考點設定")
+
+    col1, col2 = st.sidebar.columns(2)
+    with col1:
+        norm_ref_rmse_pct = st.sidebar.number_input(
+            "參考 RMSE (%)", min_value=0.01, value=8.0, step=0.5, format="%.2f",
+            help="RMSE 參考上限，例如 8 代表 8%"
+        )
+    with col2:
+        norm_ref_cost_pct = st.sidebar.number_input(
+            "參考 Cost (%/年)", min_value=0.001, value=0.04, step=0.005, format="%.3f",
+            help="Cost 參考上限，例如 0.04 代表 0.04%/年"
+        )
+    norm_ref_rmse = norm_ref_rmse_pct / 100
+    norm_ref_cost = norm_ref_cost_pct / 100
+
+    # =========================================================================
+    # 區塊 4：貝氏最佳化設定
     # =========================================================================
     st.sidebar.header("🔍 貝氏最佳化設定")
 
@@ -196,7 +215,7 @@ def render_sidebar() -> dict:
     )
 
     # =========================================================================
-    # 區塊 4：執行計算（核心數設定）
+    # 區塊 5：執行計算（核心數設定）
     # =========================================================================
     st.sidebar.header("🚀 執行計算")
 
@@ -246,8 +265,8 @@ def render_sidebar() -> dict:
             warmup=warmup,
             warmup_prices_stock=wm_prices_stock,
             warmup_prices_bond=wm_prices_bond,
-            ref_rmse=0.08,
-            ref_cost=0.0004,
+            ref_rmse=norm_ref_rmse,
+            ref_cost=norm_ref_cost,
             kp_min=bayes_kp_min, kp_max=bayes_kp_max,
             kd_min=bayes_kd_min, kd_max=bayes_kd_max,
             q_min=bayes_q_min,   q_max=bayes_q_max,
@@ -285,7 +304,7 @@ def render_sidebar() -> dict:
         )
 
     # =========================================================================
-    # 區塊 5：快取管理
+    # 區塊 6：快取管理
     # =========================================================================
     with st.sidebar.expander("🗂️ 快取管理", expanded=False):
         st.write("**股票價格快取（CSV）**")
@@ -363,6 +382,8 @@ def render_sidebar() -> dict:
         "bayes_q_min":  bayes_q_min,
         "bayes_q_max":  bayes_q_max,
         "bayes_n_trials": bayes_n_trials,
+        "norm_ref_rmse": norm_ref_rmse,
+        "norm_ref_cost": norm_ref_cost,
     }
 
 
@@ -407,17 +428,21 @@ def render_tab_pareto(params: dict, data: pd.DataFrame,
             warmup_prices_bond=warmup_prices_bond,
         )
 
-    # 計算超體積（使用 ref_multiplier）
-    tat_pts = [{"rmse": p["rmse"], "cost": p["ann_cost"]}
-               for p in pareto["time_and_threshold"]]
-    all_pts = pareto["smart_pilot"] + pareto["threshold_only"] + tat_pts
-    ref_rmse = max(p["rmse"] for p in all_pts) * 1.1
-    ref_cost = max(p["cost"] for p in all_pts) * 1.1
-    reference_point = {"rmse": ref_rmse, "cost": ref_cost}
+    # 計算超體積（固定標準化參考點）
+    ref_rmse = params["norm_ref_rmse"]
+    ref_cost = params["norm_ref_cost"]
 
-    hv_sp = calc_hypervolume(pareto["smart_pilot"], reference_point)
-    hv_to = calc_hypervolume(pareto["threshold_only"], reference_point)
-    hv_tat = calc_hypervolume(tat_pts, reference_point)
+    def _norm_hv(pts):
+        norm_pts = [
+            {"rmse": p["rmse"] / ref_rmse, "cost": p["ann_cost"] / ref_cost}
+            for p in pts
+            if p["rmse"] / ref_rmse <= 1.0 and p["ann_cost"] / ref_cost <= 1.0
+        ]
+        return calc_hypervolume(norm_pts, {"rmse": 1.0, "cost": 1.0})
+
+    hv_sp  = _norm_hv(pareto["smart_pilot"])
+    hv_to  = _norm_hv(pareto["threshold_only"])
+    hv_tat = _norm_hv(pareto["time_and_threshold"])
 
     # 決定贏家
     hv_values = {"smart_pilot": hv_sp, "threshold_only": hv_to, "time_and_threshold": hv_tat}
@@ -427,7 +452,6 @@ def render_tab_pareto(params: dict, data: pd.DataFrame,
         "threshold_only": hv_to,
         "time_and_threshold": hv_tat,
         "winner": winner,
-        "reference_point": reference_point,
     }
 
     # 繪製 Pareto 圖
@@ -508,29 +532,14 @@ def render_tab_pareto(params: dict, data: pd.DataFrame,
         st.info(f"Winner: Time-and-threshold")
 
     st.caption(
-        f"參考點倍數：1.1x | "
-        f"參考點：RMSE={ref_rmse:.5f}，Cost={ref_cost:.6f}"
+        f"標準化參考點：RMSE={ref_rmse*100:.2f}%，"
+        f"Cost={ref_cost*100:.3f}%/年 → 標準化後固定為 (1, 1)"
     )
 
     with st.expander("📊 標準化 Pareto 圖", expanded=True):
 
-        col1, col2 = st.columns(2)
-        with col1:
-            norm_ref_rmse_pct = st.number_input(
-                "參考 RMSE (%)",
-                min_value=0.01, value=8.0, step=0.5, format="%.2f",
-                help="x 軸最大值，單位 %，例如 8 代表 8%",
-                key="pareto_norm_ref_rmse"
-            )
-        with col2:
-            norm_ref_cost_pct = st.number_input(
-                "參考 Cost (%/年)",
-                min_value=0.001, value=0.04, step=0.005, format="%.3f",
-                help="y 軸最大值，單位 %/年，例如 0.04 代表 0.04%/年",
-                key="pareto_norm_ref_cost"
-            )
-        norm_ref_rmse = norm_ref_rmse_pct / 100
-        norm_ref_cost = norm_ref_cost_pct / 100
+        norm_ref_rmse = params["norm_ref_rmse"]
+        norm_ref_cost = params["norm_ref_cost"]
 
         # 標準化函式
         def normalize_points(points):
@@ -728,7 +737,8 @@ def render_tab_heatmap(params: dict, data: pd.DataFrame,
                 n_jobs=params["n_jobs"],
                 kf_r=params["kf_r"],
                 warmup=params["warmup"],
-                ref_multiplier=1.1,
+                norm_ref_rmse=params["norm_ref_rmse"],
+                norm_ref_cost=params["norm_ref_cost"],
                 warmup_prices_stock=wm_stock,
                 warmup_prices_bond=wm_bond,
                 progress_bar=gs_progress_bar,
@@ -871,7 +881,6 @@ def render_tab_heatmap(params: dict, data: pd.DataFrame,
     st.markdown("---")
     with st.expander("🧪 單點快速測試", expanded=False):
         st.markdown("輸入一組參數，快速計算這組參數的超體積和回測指標。")
-        st.markdown("目前參考點倍數：**1.1x**")
 
         col1, col2, col3, col4 = st.columns(4)
         with col1:
@@ -922,12 +931,15 @@ def render_tab_heatmap(params: dict, data: pd.DataFrame,
                     warmup_prices_bond=warmup_prices_bond,
                 )
 
-                # 計算參考點（用 Threshold-only 最差點 × ref_multiplier）
-                all_pts = pareto["smart_pilot"] + pareto["threshold_only"]
-                ref_rmse = max(p["rmse"] for p in all_pts) * 1.1
-                ref_cost = max(p["ann_cost"] for p in all_pts) * 1.1
-                reference_point = {"rmse": ref_rmse, "cost": ref_cost}
-                hv = calc_hypervolume(pareto["smart_pilot"], reference_point)
+                # 計算標準化超體積（固定參考點）
+                ref_rmse = params["norm_ref_rmse"]
+                ref_cost = params["norm_ref_cost"]
+                norm_pts = [
+                    {"rmse": p["rmse"] / ref_rmse, "cost": p["ann_cost"] / ref_cost}
+                    for p in pareto["smart_pilot"]
+                    if p["rmse"] / ref_rmse <= 1.0 and p["ann_cost"] / ref_cost <= 1.0
+                ]
+                hv = calc_hypervolume(norm_pts, {"rmse": 1.0, "cost": 1.0})
 
                 # 用指定 deadband 跑完整回測
                 result = run_smart_pilot(
@@ -965,10 +977,8 @@ def render_tab_heatmap(params: dict, data: pd.DataFrame,
             with col3:
                 st.metric("最大回撤", f"{result['metrics']['max_drawdown'] * 100:.2f}%")
 
-            # 顯示使用的參考點數值
             st.caption(
-                f"參考點：RMSE={ref_rmse:.5f}，Cost={ref_cost:.6f} "
-                f"（Threshold-only 最差點 × 1.1）"
+                f"標準化參考點：RMSE={ref_rmse*100:.2f}%，Cost={ref_cost*100:.3f}%/年"
             )
 
             # 和 Grid Search 最佳結果比較
@@ -1025,24 +1035,11 @@ def render_tab_rolling(params: dict, data: pd.DataFrame,
         )
 
     st.markdown("---")
-    st.markdown("**OOS HV 參考點設定**（與 IS 共用同一組，HV 才能直接比較）")
-    col1, col2 = st.columns(2)
-    with col1:
-        wf_ref_rmse_pct = st.number_input(
-            "參考 RMSE (%)",
-            min_value=0.01, value=8.0, step=0.5, format="%.2f",
-            help="x 軸最大值，單位 %，例如 8 代表 8%",
-            key="wf_ref_rmse"
-        )
-    with col2:
-        wf_ref_cost_pct = st.number_input(
-            "參考 Cost (%/年)",
-            min_value=0.001, value=0.08, step=0.01, format="%.3f",
-            help="y 軸最大值，單位 %/年，例如 0.08 代表 0.08%/年",
-            key="wf_ref_cost"
-        )
-    wf_norm_ref_rmse = wf_ref_rmse_pct / 100
-    wf_norm_ref_cost = wf_ref_cost_pct / 100
+    st.info(
+        f"OOS HV 參考點沿用側邊欄設定："
+        f"RMSE={params['norm_ref_rmse']*100:.2f}%，"
+        f"Cost={params['norm_ref_cost']*100:.3f}%/年"
+    )
 
     prices_stock = data[params["ticker1"]].values
     prices_bond  = data[params["ticker2"]].values
@@ -1082,8 +1079,8 @@ def render_tab_rolling(params: dict, data: pd.DataFrame,
                 step_years=int(step_years),
                 n_trials=int(params["bayes_n_trials"]),
                 deadband_values=params["deadband_values"],
-                norm_ref_rmse=wf_norm_ref_rmse,
-                norm_ref_cost=wf_norm_ref_cost,
+                norm_ref_rmse=params["norm_ref_rmse"],
+                norm_ref_cost=params["norm_ref_cost"],
                 kp_min=params["bayes_kp_min"],
                 kp_max=params["bayes_kp_max"],
                 kd_min=params["bayes_kd_min"],
@@ -1185,8 +1182,8 @@ def render_tab_rolling(params: dict, data: pd.DataFrame,
         fig_perf.update_layout(barmode="group", hovermode="x unified", height=500)
         st.plotly_chart(fig_perf, use_container_width=True)
         st.caption(
-            f"OOS HV 使用固定參考點（RMSE={wf_ref_rmse_pct:.1f}%，"
-            f"Cost={wf_ref_cost_pct:.3f}%/年），與 IS HV 同一尺度，衰退比值有意義。"
+            f"OOS HV 使用固定參考點（RMSE={params['norm_ref_rmse']*100:.2f}%，"
+            f"Cost={params['norm_ref_cost']*100:.3f}%/年），與 IS HV 同一尺度，衰退比值有意義。"
         )
 
         # ── 圖三：參數穩定性追蹤 ──
