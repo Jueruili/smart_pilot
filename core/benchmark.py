@@ -454,3 +454,137 @@ def scan_pareto_frontier(
         })
 
     return results
+
+
+# ── KF 信號預算 & 預算版 Smart Pilot ─────────────────────────────────
+
+
+def precompute_kf_signals(
+    prices_stock: np.ndarray,
+    prices_bond: np.ndarray,
+    kf_q: float,
+    kf_r: float,
+    warmup_prices_stock: np.ndarray = None,
+    warmup_prices_bond: np.ndarray = None,
+) -> tuple:
+    """
+    預算 KF 速度信號，供 Grid Search 使用。
+
+    對同一個 q 值，KF 信號與 kp / kd / deadband 無關，
+    因此只需計算一次，可重複用於所有 (kp, kd, deadband) 組合。
+
+    Args:
+        prices_stock: 回測期間股票價格，長度 N
+        prices_bond: 回測期間債券價格，長度 N
+        kf_q: KF 過程雜訊
+        kf_r: KF 觀測雜訊
+        warmup_prices_stock: 外部暖機資料（必須提供）
+        warmup_prices_bond: 外部暖機資料（必須提供）
+
+    Returns:
+        (vel_stock, vel_bond): 各長度 N 的 np.ndarray，第 i 個元素為第 i 天的 KF 速度
+    """
+    if warmup_prices_stock is None or warmup_prices_bond is None:
+        raise ValueError("precompute_kf_signals 需要提供外部暖機資料")
+
+    n = len(prices_stock)
+    vel_stock_arr = np.zeros(n, dtype=np.float64)
+    vel_bond_arr  = np.zeros(n, dtype=np.float64)
+
+    # 使用外部暖機資料初始化 KF（與 run_smart_pilot 外部暖機邏輯相同）
+    kf_stock = LogKalmanFilter(np.log(warmup_prices_stock[0]), q=kf_q, r=kf_r)
+    kf_bond  = LogKalmanFilter(np.log(warmup_prices_bond[0]),  q=kf_q, r=kf_r)
+    for i in range(len(warmup_prices_stock)):
+        kf_stock.predict()
+        kf_stock.update(np.log(warmup_prices_stock[i]))
+        kf_bond.predict()
+        kf_bond.update(np.log(warmup_prices_bond[i]))
+
+    # 對回測期間每天做 predict + update，記錄速度
+    for i in range(n):
+        kf_stock.predict()
+        kf_stock.update(np.log(prices_stock[i]))
+        kf_bond.predict()
+        kf_bond.update(np.log(prices_bond[i]))
+        vel_stock_arr[i] = kf_stock.velocity
+        vel_bond_arr[i]  = kf_bond.velocity
+
+    return vel_stock_arr, vel_bond_arr
+
+
+def run_smart_pilot_presignals(
+    rets_stock: np.ndarray,
+    rets_bond: np.ndarray,
+    prices_stock: np.ndarray,
+    prices_bond: np.ndarray,
+    dates: list,
+    vel_stock: np.ndarray,
+    vel_bond: np.ndarray,
+    target_w: float = 0.6,
+    fee_rate: float = 0.003,
+    kp: float = 0.5,
+    kd: float = 0.5,
+    deadband: float = 0.0125,
+    d_clip: float = 0.15,
+    output_clip: float = 0.2,
+) -> dict:
+    """
+    Smart Pilot 回測（使用預算好的 KF 速度信號）。
+
+    與 run_smart_pilot() 邏輯完全相同，但跳過 KF 初始化和每日 predict/update，
+    直接用傳入的 vel_stock[i] 和 vel_bond[i]。
+    無 warmup 參數（已在 precompute_kf_signals() 處理完）。
+    回傳格式與 run_smart_pilot() 完全相同。
+    """
+    n = len(rets_stock)
+    pd_ctrl = PDController(kp=kp, kd=kd, d_clip=d_clip, output_clip=output_clip)
+
+    wealth = 1.0
+    p_stock = target_w
+    turnover = 0.0
+    trade_count = 0
+    nav_list = [1.0]
+    weights = []
+    actions = []
+
+    for i in range(n):
+        # 更新資產價值
+        val_stock = p_stock * wealth * (1.0 + rets_stock[i])
+        val_bond  = (1.0 - p_stock) * wealth * (1.0 + rets_bond[i])
+        total = val_stock + val_bond
+        curr_w = val_stock / total
+
+        # PD 控制（直接使用預算信號）
+        error = target_w - curr_w
+        u = pd_ctrl.calculate(error, vel_stock[i], vel_bond[i])
+
+        if abs(u) > deadband:
+            trade_pct = abs(u)
+            cost = trade_pct * total * fee_rate
+            total -= cost
+            turnover += trade_pct
+            trade_count += 1
+            new_w = np.clip(curr_w + u, 0.0, 1.0)
+            p_stock = new_w
+            actions.append(u)
+        else:
+            p_stock = curr_w
+            actions.append(0.0)
+
+        wealth = total
+        nav_list.append(wealth)
+        weights.append(curr_w)
+
+    rmse = calc_rmse(weights, target_w)
+    cost = turnover * fee_rate
+
+    return {
+        "nav_list": nav_list,
+        "weights": weights,
+        "trade_count": trade_count,
+        "turnover": turnover,
+        "actions": actions,
+        "rmse": rmse,
+        "cost": cost,
+        "metrics": get_metrics(nav_list, turnover=turnover),
+    }

@@ -700,7 +700,11 @@ def render_tab_heatmap(params: dict, data: pd.DataFrame,
         gs_db_values = np.linspace(gs_db_min, gs_db_max, int(gs_db_points)).tolist()
         gs_total_tasks = len(gs_q_values) * len(gs_kp_range) * len(gs_kd_range)
 
-        st.info(f"共 {gs_total_tasks} 組參數，使用 {params['n_jobs']} 核心平行運算")
+        n_q = len(gs_q_values)
+        st.info(
+            f"共 {gs_total_tasks} 組參數（{n_q} 個 Q 值 × {len(gs_kp_range)} Kp × {len(gs_kd_range)} Kd），"
+            f"使用 {params['n_jobs']} 核心平行運算。KF 只計算 {n_q} 次（每個 Q 值一次）。"
+        )
         gs_progress_bar = st.progress(0)
         gs_status_text  = st.empty()
 
@@ -722,7 +726,7 @@ def render_tab_heatmap(params: dict, data: pd.DataFrame,
                 rb = np.diff(pb) / pb[:-1]
                 ps, pb, dt = ps[1:], pb[1:], dt[1:]
 
-            gs_status_text.text(f"Grid Search 進度：0/{gs_total_tasks}")
+            gs_status_text.text(f"Grid Search 進度：0/{n_q} 個 Q 值")
             t0 = time.time()
             from core.optimizer import run_grid_search_with_progress, find_best_from_grid
             results = run_grid_search_with_progress(
@@ -742,7 +746,6 @@ def render_tab_heatmap(params: dict, data: pd.DataFrame,
                 warmup_prices_bond=wm_bond,
                 progress_bar=gs_progress_bar,
                 status_text=gs_status_text,
-                total_tasks=gs_total_tasks,
             )
             best = find_best_from_grid(results)
             elapsed = time.time() - t0
