@@ -6,10 +6,20 @@ Smart Pilot 驗證模組
 - 蒙地卡羅模擬
 """
 
-from validation.out_of_sample import OutOfSampleValidator
-from validation.monte_carlo import MonteCarloSimulator
+try:
+    from validation.out_of_sample_deprecated import OutOfSampleValidator
+except ImportError:
+    OutOfSampleValidator = None
+
+try:
+    from validation.monte_carlo import MonteCarloSimulator
+except ImportError:
+    MonteCarloSimulator = None
+
+from validation.walk_forward import run_walk_forward
 
 __all__ = [
     "OutOfSampleValidator",
     "MonteCarloSimulator",
+    "run_walk_forward",
 ]
