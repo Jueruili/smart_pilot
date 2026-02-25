@@ -1001,12 +1001,13 @@ def render_tab_rolling(params: dict, data: pd.DataFrame,
 
     st.markdown("""
     每一輪包含：
-    - **IS（樣本內）**：貝氏最佳化尋找最佳 (Kp, Kd, Q)，最大化標準化超體積
+    - **IS（樣本內）**：貝氏最佳化尋找最佳 (Kp, Kd, Q)，最大化動態超體積
     - **OOS（樣本外）**：套用 IS 最佳參數，三策略直接回測，不再最佳化
-    - **窗口步進**：每輪向後移動 OOS 年數
+    - **窗口步進**：可自訂步進年數（預設 1 年）
+    - **OOS HV 參考點**：每輪動態計算（三策略最差點 × 倍數），跨輪可比較
     """)
 
-    # 設定區
+    # ── Walk-Forward 參數設定 ──
     col1, col2, col3 = st.columns(3)
     with col1:
         is_years = st.number_input(
@@ -1017,35 +1018,43 @@ def render_tab_rolling(params: dict, data: pd.DataFrame,
             "OOS 年數（樣本外）", min_value=1, max_value=5, value=2, step=1
         )
     with col3:
-        wf_n_trials = st.number_input(
-            "貝氏最佳化 trials", min_value=10, max_value=500, value=50, step=10
+        step_years = st.number_input(
+            "步進年數", min_value=1, max_value=5, value=1, step=1,
+            help="每輪窗口向後移動幾年，預設 1 年（最密集）"
         )
+
+    # ── OOS HV 參考點倍數 ──
+    wf_ref_multiplier = st.number_input(
+        "OOS 參考點倍數",
+        min_value=0.5, max_value=3.0, value=1.1, step=0.1, format="%.1f",
+        help="每輪 OOS 三策略最差點 × 此倍數作為 HV 參考點，預設 1.1",
+        key="wf_ref_multiplier"
+    )
 
     prices_stock = data[params["ticker1"]].values
     prices_bond  = data[params["ticker2"]].values
     dates        = data.index.tolist()
     total_days   = len(dates)
 
-    # 預估輪數提示
-    is_days  = int(is_years) * 252
-    oos_days = int(oos_years) * 252
-    n_rounds_est = max(0, (total_days - is_days) // oos_days)
+    # 預估輪數
+    is_days   = int(is_years)  * 252
+    oos_days  = int(oos_years) * 252
+    step_days = int(step_years) * 252
+    n_rounds_est = max(0, (total_days - is_days - oos_days) // step_days + 1)
     st.info(
         f"預估輪數：約 {n_rounds_est} 輪 | "
-        f"每輪 {int(wf_n_trials)} 次試驗 | "
+        f"每輪 {int(params['bayes_n_trials'])} 次貝氏試驗 | "
+        f"步進 {int(step_years)} 年 | "
         f"資料總長：{total_days} 天（{total_days/252:.1f} 年）"
     )
 
     if n_rounds_est == 0:
-        st.warning(
-            "資料長度不足以完成一輪 IS+OOS，"
-            "請縮短 IS/OOS 年數或延長回測區間"
-        )
+        st.warning("資料長度不足以完成一輪 IS+OOS，請縮短 IS/OOS 年數或延長回測區間")
         return
 
     if st.button("▶ 執行 Walk-Forward 分析", type="primary"):
         with st.spinner("執行中，請耐心等候..."):
-            from core.walk_forward import run_walk_forward
+            from validation.walk_forward import run_walk_forward
             wf_result = run_walk_forward(
                 prices_stock, prices_bond, dates,
                 warmup_prices_stock=warmup_prices_stock,
@@ -1057,10 +1066,12 @@ def render_tab_rolling(params: dict, data: pd.DataFrame,
                 output_clip=params["output_clip"],
                 is_years=int(is_years),
                 oos_years=int(oos_years),
-                n_trials=int(wf_n_trials),
-                deadband_values=np.linspace(0.005, 0.10, 15).tolist(),
+                step_years=int(step_years),
+                n_trials=int(params["bayes_n_trials"]),
+                deadband_values=params["deadband_values"],
                 norm_ref_rmse=0.08,
-                norm_ref_cost=0.0004,
+                norm_ref_cost=0.0008,
+                ref_multiplier=wf_ref_multiplier,
                 kp_min=params["bayes_kp_min"],
                 kp_max=params["bayes_kp_max"],
                 kd_min=params["bayes_kd_min"],
@@ -1077,30 +1088,20 @@ def render_tab_rolling(params: dict, data: pd.DataFrame,
 
         st.success(f"Walk-Forward 完成！共 {len(rounds)} 輪")
 
-        # ────────────────────────────────────────────
-        # 圖一：Walk-Forward 時間軸（Gantt Chart）
-        # ────────────────────────────────────────────
+        # ── 圖一：Walk-Forward 時間軸（Gantt Chart）──
         st.subheader("圖一：Walk-Forward 時間軸")
-
         fig_gantt = go.Figure()
         base_date = rounds[0]["is_start"]
-
         for r in rounds:
             is_start_days  = (r["is_start"]  - base_date).days
             is_len_days    = (r["is_end"]    - r["is_start"]).days
             oos_start_days = (r["oos_start"] - base_date).days
             oos_len_days   = (r["oos_end"]   - r["oos_start"]).days
             label = f"Round {r['round']}"
-
             fig_gantt.add_trace(go.Bar(
-                name="IS（樣本內）",
-                x=[is_len_days],
-                y=[label],
-                base=[is_start_days],
-                orientation="h",
-                marker_color="#4A90D9",
-                showlegend=(r["round"] == 1),
-                legendgroup="IS",
+                name="IS（樣本內）", x=[is_len_days], y=[label],
+                base=[is_start_days], orientation="h", marker_color="#4A90D9",
+                showlegend=(r["round"] == 1), legendgroup="IS",
                 hovertemplate=(
                     f"Round {r['round']} IS<br>"
                     f"{r['is_start'].strftime('%Y/%m/%d')} ~ "
@@ -1108,137 +1109,98 @@ def render_tab_rolling(params: dict, data: pd.DataFrame,
                 ),
             ))
             fig_gantt.add_trace(go.Bar(
-                name="OOS（樣本外）",
-                x=[oos_len_days],
-                y=[label],
-                base=[oos_start_days],
-                orientation="h",
-                marker_color="#F5A623",
-                showlegend=(r["round"] == 1),
-                legendgroup="OOS",
+                name="OOS（樣本外）", x=[oos_len_days], y=[label],
+                base=[oos_start_days], orientation="h", marker_color="#F5A623",
+                showlegend=(r["round"] == 1), legendgroup="OOS",
                 hovertemplate=(
                     f"Round {r['round']} OOS<br>"
                     f"{r['oos_start'].strftime('%Y/%m/%d')} ~ "
                     f"{r['oos_end'].strftime('%Y/%m/%d')}<extra></extra>"
                 ),
             ))
-
         fig_gantt.update_layout(
-            barmode="overlay",
-            xaxis_title="距第一輪起始天數",
-            yaxis_title="滾動輪次",
-            hovermode="closest",
+            barmode="overlay", xaxis_title="距第一輪起始天數",
+            yaxis_title="滾動輪次", hovermode="closest",
             height=max(300, len(rounds) * 60),
         )
         st.plotly_chart(fig_gantt, use_container_width=True)
 
-        # ────────────────────────────────────────────
-        # 圖二：OOS 績效大對決（雙 Y 軸）
-        # ────────────────────────────────────────────
+        # ── 圖二：OOS 績效大對決（雙 Y 軸）──
         st.subheader("圖二：OOS 績效大對決")
-
         oos_labels = [
             f"{r['oos_start'].strftime('%Y/%m')}~{r['oos_end'].strftime('%Y/%m')}"
             for r in rounds
         ]
-
         fig_perf = make_subplots(specs=[[{"secondary_y": True}]])
-
         fig_perf.add_trace(go.Bar(
-            name="Smart Pilot HV",
-            x=oos_labels,
+            name="Smart Pilot HV", x=oos_labels,
             y=[r["oos_sp_hv"] for r in rounds],
-            marker_color="#FFD700",
-            offsetgroup=0,
+            marker_color="#FFD700", offsetgroup=0,
         ), secondary_y=False)
         fig_perf.add_trace(go.Bar(
-            name="Threshold-only HV",
-            x=oos_labels,
+            name="Threshold-only HV", x=oos_labels,
             y=[r["oos_to_hv"] for r in rounds],
-            marker_color="gray",
-            offsetgroup=1,
+            marker_color="gray", offsetgroup=1,
         ), secondary_y=False)
         fig_perf.add_trace(go.Bar(
-            name="Time-and-threshold HV",
-            x=oos_labels,
+            name="Time-and-threshold HV", x=oos_labels,
             y=[r["oos_tat_hv"] for r in rounds],
-            marker_color="#00CED1",
-            offsetgroup=2,
+            marker_color="#00CED1", offsetgroup=2,
         ), secondary_y=False)
-
         fig_perf.add_trace(go.Scatter(
-            name="Smart Pilot 波動率",
-            x=oos_labels,
+            name="Smart Pilot 波動率", x=oos_labels,
             y=[r["oos_sp"]["metrics"]["ann_wealth_vol"] * 100 for r in rounds],
             mode="lines+markers",
             line=dict(color="#FFD700", dash="dot", width=2),
             marker=dict(symbol="circle", size=8),
         ), secondary_y=True)
         fig_perf.add_trace(go.Scatter(
-            name="Threshold-only 波動率",
-            x=oos_labels,
+            name="Threshold-only 波動率", x=oos_labels,
             y=[r["oos_to"]["metrics"]["ann_wealth_vol"] * 100 for r in rounds],
             mode="lines+markers",
             line=dict(color="gray", dash="dot", width=2),
             marker=dict(symbol="square", size=8),
         ), secondary_y=True)
         fig_perf.add_trace(go.Scatter(
-            name="Time-and-threshold 波動率",
-            x=oos_labels,
+            name="Time-and-threshold 波動率", x=oos_labels,
             y=[r["oos_tat"]["metrics"]["ann_wealth_vol"] * 100 for r in rounds],
             mode="lines+markers",
             line=dict(color="#00CED1", dash="dot", width=2),
             marker=dict(symbol="diamond", size=8),
         ), secondary_y=True)
-
-        fig_perf.update_yaxes(title_text="OOS 超體積（標準化）", secondary_y=False)
+        fig_perf.update_yaxes(title_text="OOS 超體積（動態參考點）", secondary_y=False)
         fig_perf.update_yaxes(title_text="OOS 年化波動率 (%)", secondary_y=True)
         fig_perf.update_layout(barmode="group", hovermode="x unified", height=500)
         st.plotly_chart(fig_perf, use_container_width=True)
+        st.caption(
+            f"OOS HV 使用動態參考點（每輪三策略最差點 × {wf_ref_multiplier}），"
+            "各輪之間可直接比較大小。"
+        )
 
-        # ────────────────────────────────────────────
-        # 圖三：參數穩定性追蹤
-        # ────────────────────────────────────────────
+        # ── 圖三：參數穩定性追蹤 ──
         st.subheader("圖三：最佳化參數穩定性追蹤")
-
         round_labels = [f"Round {r['round']}" for r in rounds]
-
         fig_params = go.Figure()
         fig_params.add_trace(go.Scatter(
-            name="Kp",
-            x=round_labels,
-            y=[r["best_kp"] for r in rounds],
-            mode="lines+markers",
-            line=dict(color="#1f77b4", width=2),
-            marker=dict(size=8),
+            name="Kp", x=round_labels, y=[r["best_kp"] for r in rounds],
+            mode="lines+markers", line=dict(color="#1f77b4", width=2), marker=dict(size=8),
         ))
         fig_params.add_trace(go.Scatter(
-            name="Kd",
-            x=round_labels,
-            y=[r["best_kd"] for r in rounds],
-            mode="lines+markers",
-            line=dict(color="#ff7f0e", width=2),
-            marker=dict(size=8),
+            name="Kd", x=round_labels, y=[r["best_kd"] for r in rounds],
+            mode="lines+markers", line=dict(color="#ff7f0e", width=2), marker=dict(size=8),
         ))
         fig_params.add_trace(go.Scatter(
-            name="Q×100",
-            x=round_labels,
-            y=[r["best_q"] * 100 for r in rounds],
+            name="Q×100", x=round_labels, y=[r["best_q"] * 100 for r in rounds],
             mode="lines+markers",
-            line=dict(color="#2ca02c", width=2, dash="dash"),
-            marker=dict(size=8),
+            line=dict(color="#2ca02c", width=2, dash="dash"), marker=dict(size=8),
         ))
         fig_params.update_layout(
-            xaxis_title="滾動輪次",
-            yaxis_title="參數數值",
-            hovermode="x unified",
-            height=400,
+            xaxis_title="滾動輪次", yaxis_title="參數數值",
+            hovermode="x unified", height=400,
         )
         st.plotly_chart(fig_params, use_container_width=True)
 
-        # ────────────────────────────────────────────
-        # 表格一：OOS 綜合績效指標比較
-        # ────────────────────────────────────────────
+        # ── 表格一：OOS 綜合績效指標比較 ──
         st.subheader("表格一：OOS 綜合績效指標比較（所有輪次平均）")
 
         def collect_metrics(key):
@@ -1246,13 +1208,13 @@ def render_tab_rolling(params: dict, data: pd.DataFrame,
             for r in rounds:
                 m = r[key]["metrics"]
                 rows.append({
-                    "交易次數":    r[key]["trade_count"],
-                    "總周轉率":    r[key]["turnover"],
-                    "RMSE":       r[key]["rmse"],
-                    "年化報酬率":  m["ann_return"],
-                    "夏普值":      m["sharpe"],
-                    "最大回撤":    m["max_drawdown"],
-                    "年化波動率":  m["ann_wealth_vol"],
+                    "交易次數":   r[key]["trade_count"],
+                    "總周轉率":   r[key]["turnover"],
+                    "RMSE":      r[key]["rmse"],
+                    "年化報酬率": m["ann_return"],
+                    "夏普值":     m["sharpe"],
+                    "最大回撤":   m["max_drawdown"],
+                    "年化波動率": m["ann_wealth_vol"],
                 })
             return pd.DataFrame(rows).mean()
 
@@ -1262,63 +1224,41 @@ def render_tab_rolling(params: dict, data: pd.DataFrame,
 
         summary_df = pd.DataFrame({
             "策略": ["Smart Pilot", "Threshold-only", "Time-and-threshold"],
-            "交易次數(均)": [f"{avg_sp['交易次數']:.1f}",
-                           f"{avg_to['交易次數']:.1f}",
-                           f"{avg_tat['交易次數']:.1f}"],
-            "總周轉率(均)": [f"{avg_sp['總周轉率']:.3f}",
-                           f"{avg_to['總周轉率']:.3f}",
-                           f"{avg_tat['總周轉率']:.3f}"],
-            "RMSE(均)":    [f"{avg_sp['RMSE']*100:.2f}%",
-                           f"{avg_to['RMSE']*100:.2f}%",
-                           f"{avg_tat['RMSE']*100:.2f}%"],
-            "年化報酬(均)": [f"{avg_sp['年化報酬率']*100:.2f}%",
-                           f"{avg_to['年化報酬率']*100:.2f}%",
-                           f"{avg_tat['年化報酬率']*100:.2f}%"],
-            "Sharpe(均)":  [f"{avg_sp['夏普值']:.2f}",
-                           f"{avg_to['夏普值']:.2f}",
-                           f"{avg_tat['夏普值']:.2f}"],
-            "MDD(均)":     [f"{avg_sp['最大回撤']*100:.2f}%",
-                           f"{avg_to['最大回撤']*100:.2f}%",
-                           f"{avg_tat['最大回撤']*100:.2f}%"],
-            "年化波動率(均)":[f"{avg_sp['年化波動率']*100:.2f}%",
-                           f"{avg_to['年化波動率']*100:.2f}%",
-                           f"{avg_tat['年化波動率']*100:.2f}%"],
+            "交易次數(均)":  [f"{avg_sp['交易次數']:.1f}",       f"{avg_to['交易次數']:.1f}",       f"{avg_tat['交易次數']:.1f}"],
+            "總周轉率(均)":  [f"{avg_sp['總周轉率']:.3f}",       f"{avg_to['總周轉率']:.3f}",       f"{avg_tat['總周轉率']:.3f}"],
+            "RMSE(均)":     [f"{avg_sp['RMSE']*100:.2f}%",      f"{avg_to['RMSE']*100:.2f}%",      f"{avg_tat['RMSE']*100:.2f}%"],
+            "年化報酬(均)":  [f"{avg_sp['年化報酬率']*100:.2f}%",f"{avg_to['年化報酬率']*100:.2f}%",f"{avg_tat['年化報酬率']*100:.2f}%"],
+            "Sharpe(均)":   [f"{avg_sp['夏普值']:.2f}",         f"{avg_to['夏普值']:.2f}",         f"{avg_tat['夏普值']:.2f}"],
+            "MDD(均)":      [f"{avg_sp['最大回撤']*100:.2f}%",  f"{avg_to['最大回撤']*100:.2f}%",  f"{avg_tat['最大回撤']*100:.2f}%"],
+            "年化波動率(均)":[f"{avg_sp['年化波動率']*100:.2f}%",f"{avg_to['年化波動率']*100:.2f}%",f"{avg_tat['年化波動率']*100:.2f}%"],
         })
         st.dataframe(summary_df, use_container_width=True, hide_index=True)
 
-        # ────────────────────────────────────────────
-        # 表格二：過度擬合檢驗（IS vs OOS）
-        # ────────────────────────────────────────────
+        # ── 表格二：過度擬合檢驗 ──
         st.subheader("表格二：過度擬合檢驗（Smart Pilot IS vs OOS）")
-
         overfit_df = pd.DataFrame({
             "輪次": [
-                f"Round {r['round']} "
-                f"({r['is_start'].strftime('%Y')}~{r['oos_end'].strftime('%Y')})"
+                f"Round {r['round']} ({r['is_start'].strftime('%Y')}~{r['oos_end'].strftime('%Y')})"
                 for r in rounds
             ],
-            "IS 區間": [
-                f"{r['is_start'].strftime('%Y/%m/%d')}~{r['is_end'].strftime('%Y/%m/%d')}"
-                for r in rounds
-            ],
-            "OOS 區間": [
-                f"{r['oos_start'].strftime('%Y/%m/%d')}~{r['oos_end'].strftime('%Y/%m/%d')}"
-                for r in rounds
-            ],
+            "IS 區間":  [f"{r['is_start'].strftime('%Y/%m/%d')}~{r['is_end'].strftime('%Y/%m/%d')}"   for r in rounds],
+            "OOS 區間": [f"{r['oos_start'].strftime('%Y/%m/%d')}~{r['oos_end'].strftime('%Y/%m/%d')}" for r in rounds],
             "IS HV":   [f"{r['is_hv']:.6f}"     for r in rounds],
             "OOS HV":  [f"{r['oos_sp_hv']:.6f}" for r in rounds],
             "衰退比值(OOS/IS)": [
                 f"{r['oos_sp_hv']/r['is_hv']:.3f}" if r["is_hv"] > 0 else "N/A"
                 for r in rounds
             ],
+            "OOS 參考點 RMSE": [f"{r['dyn_ref_rmse']*100:.3f}%" for r in rounds],
+            "OOS 參考點 Cost": [f"{r['dyn_ref_cost']*100:.4f}%" for r in rounds],
             "最佳 Kp": [f"{r['best_kp']:.3f}" for r in rounds],
             "最佳 Kd": [f"{r['best_kd']:.3f}" for r in rounds],
             "最佳 Q":  [f"{r['best_q']:.6f}"  for r in rounds],
         })
         st.dataframe(overfit_df, use_container_width=True, hide_index=True)
         st.caption(
-            "衰退比值接近 1.0 → 無過擬合；"
-            "遠小於 1.0（如 < 0.5）→ 可能過擬合"
+            "衰退比值接近 1.0 → 無過擬合；遠小於 1.0（如 < 0.5）→ 可能過擬合。\n"
+            "注意：IS HV 與 OOS HV 使用不同參考點，衰退比值僅供趨勢參考。"
         )
 
 
