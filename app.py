@@ -514,8 +514,23 @@ def render_tab_pareto(params: dict, data: pd.DataFrame,
 
     with st.expander("📊 標準化 Pareto 圖", expanded=True):
 
-        norm_ref_rmse = 0.08
-        norm_ref_cost = 0.0004
+        col1, col2 = st.columns(2)
+        with col1:
+            norm_ref_rmse_pct = st.number_input(
+                "參考 RMSE (%)",
+                min_value=0.01, value=8.0, step=0.5, format="%.2f",
+                help="x 軸最大值，單位 %，例如 8 代表 8%",
+                key="pareto_norm_ref_rmse"
+            )
+        with col2:
+            norm_ref_cost_pct = st.number_input(
+                "參考 Cost (%/年)",
+                min_value=0.001, value=0.04, step=0.005, format="%.3f",
+                help="y 軸最大值，單位 %/年，例如 0.04 代表 0.04%/年",
+                key="pareto_norm_ref_cost"
+            )
+        norm_ref_rmse = norm_ref_rmse_pct / 100
+        norm_ref_cost = norm_ref_cost_pct / 100
 
         # 標準化函式
         def normalize_points(points):
@@ -636,11 +651,119 @@ def render_tab_heatmap(params: dict, data: pd.DataFrame,
     """渲染參數空間熱力圖分頁"""
     st.header("Heatmap - 參數空間")
 
+    # ── Grid Search 參數設定 ──
+    with st.expander("⚙️ Grid Search 參數設定", expanded=False):
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            gs_kp_min = st.number_input("Kp 最小值", value=0.1, step=0.1, format="%.1f", key="gs_kp_min")
+        with col2:
+            gs_kp_max = st.number_input("Kp 最大值", value=1.0, step=0.1, format="%.1f", key="gs_kp_max")
+        with col3:
+            gs_kp_points = st.number_input("Kp 點數", value=10, min_value=3, step=1, key="gs_kp_points")
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            gs_kd_min = st.number_input("Kd 最小值", value=0.1, step=0.1, format="%.1f", key="gs_kd_min")
+        with col2:
+            gs_kd_max = st.number_input("Kd 最大值", value=1.0, step=0.1, format="%.1f", key="gs_kd_max")
+        with col3:
+            gs_kd_points = st.number_input("Kd 點數", value=10, min_value=3, step=1, key="gs_kd_points")
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            gs_q_min = st.number_input("Q 最小值", value=0.00001, min_value=0.000001, format="%.5f", key="gs_q_min")
+        with col2:
+            gs_q_max = st.number_input("Q 最大值", value=0.1, min_value=0.00001, format="%.4f", key="gs_q_max")
+        with col3:
+            gs_q_points = st.number_input("Q 點數", value=5, min_value=2, step=1, key="gs_q_points")
+        gs_q_values = np.logspace(np.log10(gs_q_min), np.log10(gs_q_max), int(gs_q_points)).tolist()
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            gs_db_min = st.number_input("Deadband 最小值", value=0.005, step=0.005, format="%.3f", key="gs_db_min")
+        with col2:
+            gs_db_max = st.number_input("Deadband 最大值", value=0.10, step=0.005, format="%.3f", key="gs_db_max")
+        with col3:
+            gs_db_points = st.number_input("Deadband 點數", value=15, min_value=3, step=1, key="gs_db_points")
+
+        gs_kp_range  = np.linspace(gs_kp_min, gs_kp_max, int(gs_kp_points)).tolist()
+        gs_kd_range  = np.linspace(gs_kd_min, gs_kd_max, int(gs_kd_points)).tolist()
+        gs_db_values = np.linspace(gs_db_min, gs_db_max, int(gs_db_points)).tolist()
+        gs_total_tasks = len(gs_q_values) * len(gs_kp_range) * len(gs_kd_range)
+
+        st.info(f"共 {gs_total_tasks} 組參數，使用 {params['n_jobs']} 核心平行運算")
+        gs_progress_bar = st.progress(0)
+        gs_status_text  = st.empty()
+
+        if st.button("▶ 執行 Grid Search（約 2-5 分鐘）", type="primary", key="btn_grid_search"):
+            with st.spinner("載入資料..."):
+                result = load_data(
+                    tickers=[params["ticker1"], params["ticker2"]],
+                    start_date=str(params["start_date"]),
+                    end_date=str(params["end_date"]),
+                    warmup_days=params["warmup"],
+                )
+                full_backtest = result["backtest_data"]
+                wm_stock = result["warmup_data"][params["ticker1"]].values
+                wm_bond  = result["warmup_data"][params["ticker2"]].values
+                ps = full_backtest[params["ticker1"]].values
+                pb = full_backtest[params["ticker2"]].values
+                dt = full_backtest.index.tolist()
+                rs = np.diff(ps) / ps[:-1]
+                rb = np.diff(pb) / pb[:-1]
+                ps, pb, dt = ps[1:], pb[1:], dt[1:]
+
+            gs_status_text.text(f"Grid Search 進度：0/{gs_total_tasks}")
+            t0 = time.time()
+            from core.optimizer import run_grid_search_with_progress, find_best_from_grid
+            results = run_grid_search_with_progress(
+                rs, rb, ps, pb, dt,
+                target_w=params["target_w"],
+                fee_rate=params["fee_rate"],
+                kp_range=gs_kp_range,
+                kd_range=gs_kd_range,
+                q_values=gs_q_values,
+                deadband_values=gs_db_values,
+                n_jobs=params["n_jobs"],
+                kf_r=params["kf_r"],
+                warmup=params["warmup"],
+                ref_multiplier=1.1,
+                warmup_prices_stock=wm_stock,
+                warmup_prices_bond=wm_bond,
+                progress_bar=gs_progress_bar,
+                status_text=gs_status_text,
+                total_tasks=gs_total_tasks,
+            )
+            best = find_best_from_grid(results)
+            elapsed = time.time() - t0
+            gs_progress_bar.progress(1.0)
+            gs_status_text.text(f"完成！共 {gs_total_tasks} 組，耗時 {elapsed:.1f} 秒")
+
+            cache_path = Path("data/cache/grid_search_results.json")
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(cache_path, "w", encoding="utf-8") as f:
+                json.dump({
+                    "results": results,
+                    "best": best,
+                    "metadata": {
+                        "q_values":        gs_q_values,
+                        "kp_range":        gs_kp_range,
+                        "kd_range":        gs_kd_range,
+                        "deadband_values": gs_db_values,
+                    }
+                }, f, ensure_ascii=False, indent=2)
+            load_grid_cache.clear()
+            st.success(
+                f"Grid Search 完成！共 {len(results)} 組，耗時 {elapsed:.1f} 秒\n"
+                f"最佳：Kp={best['kp']:.2f}, Kd={best['kd']:.2f}, "
+                f"Q={best['q']:.5f}, HV={best['hypervolume']*10000:.4f}"
+            )
+
     grid_cache = load_grid_cache()
 
     if grid_cache is None:
         st.warning("找不到 Grid Search 快取檔案。")
-        st.info("請在側邊欄執行 Grid Search 產生快取。")
+        st.info("請展開上方「⚙️ Grid Search 參數設定」執行 Grid Search 產生快取。")
         return
 
     st.markdown("""
