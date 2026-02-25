@@ -540,6 +540,7 @@ def render_tab_pareto(params: dict, data: pd.DataFrame,
                     "cost_norm": p["ann_cost"] / norm_ref_cost,
                 }
                 for p in points
+                if p["rmse"] / norm_ref_rmse <= 1.0 and p["ann_cost"] / norm_ref_cost <= 1.0
             ]
 
         sp_norm  = normalize_points(pareto["smart_pilot"])
