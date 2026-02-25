@@ -37,8 +37,7 @@ def run_walk_forward(
     n_trials: int = 50,
     deadband_values: list = None,
     norm_ref_rmse: float = 0.08,
-    norm_ref_cost: float = 0.0008,
-    ref_multiplier: float = 1.1,
+    norm_ref_cost: float = 0.0004,
     kp_min: float = 0.01, kp_max: float = 5.0,
     kd_min: float = 0.01, kd_max: float = 5.0,
     q_min: float = 1e-5,  q_max: float = 1.0,
@@ -171,26 +170,23 @@ def run_walk_forward(
             warmup_prices_bond=oos_warmup_bond,
         )
 
-        # 動態參考點：三策略所有點合併後取最差 × ref_multiplier
+        # 固定標準化參考點
         sp_pts  = oos_sp_pareto["smart_pilot"]
         to_pts  = oos_to_pareto["threshold_only"]
         tat_pts = oos_tat_pareto["time_and_threshold"]
 
-        all_oos_pts = (
-            [{"rmse": p["rmse"], "cost": p["ann_cost"]} for p in sp_pts] +
-            [{"rmse": p["rmse"], "cost": p["ann_cost"]} for p in to_pts] +
-            [{"rmse": p["rmse"], "cost": p["ann_cost"]} for p in tat_pts]
-        )
-        dyn_ref_rmse = max(p["rmse"] for p in all_oos_pts) * ref_multiplier
-        dyn_ref_cost = max(p["cost"] for p in all_oos_pts) * ref_multiplier
-        dyn_ref = {"rmse": dyn_ref_rmse, "cost": dyn_ref_cost}
+        norm_ref = {"rmse": 1.0, "cost": 1.0}
 
-        oos_sp_hv  = calc_hypervolume(
-            [{"rmse": p["rmse"], "cost": p["ann_cost"]} for p in sp_pts], dyn_ref)
-        oos_to_hv  = calc_hypervolume(
-            [{"rmse": p["rmse"], "cost": p["ann_cost"]} for p in to_pts], dyn_ref)
-        oos_tat_hv = calc_hypervolume(
-            [{"rmse": p["rmse"], "cost": p["ann_cost"]} for p in tat_pts], dyn_ref)
+        def _norm_pts(pts):
+            return [
+                {"rmse": p["rmse"] / norm_ref_rmse, "cost": p["ann_cost"] / norm_ref_cost}
+                for p in pts
+                if p["rmse"] / norm_ref_rmse <= 1.0 and p["ann_cost"] / norm_ref_cost <= 1.0
+            ]
+
+        oos_sp_hv  = calc_hypervolume(_norm_pts(sp_pts),  norm_ref)
+        oos_to_hv  = calc_hypervolume(_norm_pts(to_pts),  norm_ref)
+        oos_tat_hv = calc_hypervolume(_norm_pts(tat_pts), norm_ref)
 
         # 單點績效指標
         mid_db = deadband_values[len(deadband_values) // 2]
@@ -231,8 +227,6 @@ def run_walk_forward(
             "oos_sp_hv":    oos_sp_hv,
             "oos_to_hv":    oos_to_hv,
             "oos_tat_hv":   oos_tat_hv,
-            "dyn_ref_rmse": dyn_ref_rmse,
-            "dyn_ref_cost": dyn_ref_cost,
             "oos_sp":       oos_sp,
             "oos_to":       oos_to,
             "oos_tat":      oos_tat,

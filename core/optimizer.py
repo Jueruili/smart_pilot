@@ -25,7 +25,7 @@ def _single_grid_run(
     kp: float, kd: float, q: float,
     rets_stock, rets_bond, prices_stock, prices_bond,
     dates, target_w, fee_rate,
-    deadband_values, reference_point,
+    deadband_values, norm_ref_rmse: float, norm_ref_cost: float,
     kf_r: float = 0.005,
     warmup: int = 30,
     d_clip: float = 0.15,
@@ -36,9 +36,7 @@ def _single_grid_run(
     """
     單組 (Kp, Kd, Q) 的完整評估，供平行化使用。
 
-    掃描多個 deadband → 得到 Smart Pilot frontier → 計算超體積。
-    同時也掃描 Threshold-only frontier 作為比較基準（共用同一個參考點）。
-
+    掃描多個 deadband → 得到 Smart Pilot frontier → 標準化後計算超體積。
     超體積越大 → 這組參數在整個 deadband 範圍內表現越好。
     """
     from core.benchmark import scan_pareto_frontier
@@ -54,7 +52,12 @@ def _single_grid_run(
         warmup_prices_bond=warmup_prices_bond,
     )
 
-    hv = calc_hypervolume(pareto["smart_pilot"], reference_point)
+    norm_pts = [
+        {"rmse": p["rmse"] / norm_ref_rmse, "cost": p["ann_cost"] / norm_ref_cost}
+        for p in pareto["smart_pilot"]
+        if p["rmse"] / norm_ref_rmse <= 1.0 and p["ann_cost"] / norm_ref_cost <= 1.0
+    ]
+    hv = calc_hypervolume(norm_pts, {"rmse": 1.0, "cost": 1.0})
 
     return {
         "kp": kp,
@@ -83,21 +86,14 @@ def run_grid_search(
     warmup: int = 30,
     d_clip: float = 0.15,
     output_clip: float = 0.2,
-    ref_multiplier: float = 1.1,
+    norm_ref_rmse: float = 0.08,
+    norm_ref_cost: float = 0.0004,
     warmup_prices_stock: np.ndarray = None,
     warmup_prices_bond: np.ndarray = None,
 ) -> List[dict]:
     """
-    Grid Search：掃描所有 (Kp, Kd, Q) 組合，每組計算超體積。
+    Grid Search：掃描所有 (Kp, Kd, Q) 組合，每組計算標準化超體積。
     使用 joblib 平行化加速。
-
-    流程：
-    1. 對每組 (Kp, Kd, Q)，掃描多個 deadband
-    2. 得到 Smart Pilot 的 Pareto frontier
-    3. 計算超體積作為這組參數的評分
-
-    結果用於畫 3D scatter：X=Kp, Y=Kd, Z=Q, 顏色=超體積
-    顏色越亮 → 超體積越大 → 參數越好
 
     Args:
         kp_range: Kp 網格，預設 10 個點 [0.1 ~ 1.0]
@@ -119,20 +115,6 @@ def run_grid_search(
     if deadband_values is None:
         deadband_values = np.linspace(0.005, 0.10, 15).tolist()
 
-    # 先算 Threshold-only frontier 取得動態參考點
-    from core.benchmark import run_threshold_only
-    to_frontier = []
-    for tol in np.linspace(0.005, 0.15, 15):
-        r = run_threshold_only(rets_stock, rets_bond, dates,
-                               target_w=target_w, drift_tolerance=float(tol), fee_rate=fee_rate,
-                               warmup=warmup)
-        to_frontier.append({"rmse": r["rmse"], "cost": r["cost"]})
-
-    all_pts = to_frontier
-    ref_rmse = max(p["rmse"] for p in all_pts) * ref_multiplier
-    ref_cost = max(p["cost"] for p in all_pts) * ref_multiplier
-    reference_point = {"rmse": ref_rmse, "cost": ref_cost}
-
     tasks = [
         (kp, kd, q)
         for q in q_values
@@ -145,7 +127,7 @@ def run_grid_search(
             kp, kd, q,
             rets_stock, rets_bond, prices_stock, prices_bond,
             dates, target_w, fee_rate,
-            deadband_values, reference_point,
+            deadband_values, norm_ref_rmse, norm_ref_cost,
             kf_r, warmup, d_clip, output_clip,
             warmup_prices_stock, warmup_prices_bond,
         )
@@ -183,7 +165,8 @@ def run_grid_search_with_progress(
     warmup: int = 30,
     d_clip: float = 0.15,
     output_clip: float = 0.2,
-    ref_multiplier: float = 1.1,
+    norm_ref_rmse: float = 0.08,
+    norm_ref_cost: float = 0.0004,
     warmup_prices_stock: np.ndarray = None,
     warmup_prices_bond: np.ndarray = None,
     progress_bar=None,
@@ -195,8 +178,6 @@ def run_grid_search_with_progress(
     由於 joblib 平行化不支援直接回呼 Streamlit，
     改用批次執行（每批 n_jobs 個任務），每批完成後更新進度。
     """
-    from core.benchmark import run_threshold_only
-
     if kp_range is None:
         kp_range = np.linspace(0.1, 1.0, 10).tolist()
     if kd_range is None:
@@ -205,18 +186,6 @@ def run_grid_search_with_progress(
         q_values = [0.0001, 0.001, 0.01]
     if deadband_values is None:
         deadband_values = np.linspace(0.005, 0.10, 15).tolist()
-
-    # 先算 Threshold-only 取動態參考點
-    to_frontier = []
-    for tol in np.linspace(0.005, 0.15, 15):
-        r = run_threshold_only(rets_stock, rets_bond, dates,
-                               target_w=target_w, drift_tolerance=float(tol),
-                               fee_rate=fee_rate, warmup=warmup)
-        to_frontier.append({"rmse": r["rmse"], "cost": r["cost"]})
-
-    ref_rmse = max(p["rmse"] for p in to_frontier) * ref_multiplier
-    ref_cost = max(p["cost"] for p in to_frontier) * ref_multiplier
-    reference_point = {"rmse": ref_rmse, "cost": ref_cost}
 
     tasks = [
         (kp, kd, q)
@@ -243,7 +212,7 @@ def run_grid_search_with_progress(
                 kp, kd, q,
                 rets_stock, rets_bond, prices_stock, prices_bond,
                 dates, target_w, fee_rate,
-                deadband_values, reference_point,
+                deadband_values, norm_ref_rmse, norm_ref_cost,
                 kf_r, warmup, d_clip, output_clip,
                 warmup_prices_stock, warmup_prices_bond,
             )
@@ -279,8 +248,8 @@ def run_bayesian_opt(
     warmup: int = 20,
     warmup_prices_stock: np.ndarray = None,
     warmup_prices_bond: np.ndarray = None,
-    ref_rmse: float = None,
-    ref_cost: float = None,
+    ref_rmse: float = 0.08,
+    ref_cost: float = 0.0004,
     kp_min: float = 0.01, kp_max: float = 5.0,
     kd_min: float = 0.01, kd_max: float = 5.0,
     q_min: float = 1e-5,  q_max: float = 1.0,
@@ -288,39 +257,18 @@ def run_bayesian_opt(
     n_jobs: int = 1,
     d_clip: float = 0.15,
     output_clip: float = 0.2,
-    ref_multiplier: float = 1.1,
     progress_bar=None,
     status_text=None,
 ) -> dict:
     """
     使用 optuna TPE 貝氏最佳化尋找最大化超體積的 (Kp, Kd, Q)。
 
-    如果 ref_rmse 和 ref_cost 都不是 None：
-      使用標準化 HV，標準化後參考點為 (1, 1)
-    否則：
-      使用動態參考點（Threshold-only 最差點 × ref_multiplier）
+    使用固定標準化參考點（ref_rmse, ref_cost），標準化後參考點為 (1, 1)。
     """
     import optuna
     optuna.logging.set_verbosity(optuna.logging.WARNING)
 
     from core.benchmark import scan_pareto_frontier
-
-    use_norm = (ref_rmse is not None) and (ref_cost is not None)
-
-    # 動態模式：預先計算參考點
-    if not use_norm:
-        to_scan = scan_pareto_frontier(
-            rets_stock, rets_bond, prices_stock, prices_bond, dates,
-            target_w=target_w, fee_rate=fee_rate,
-            kf_q=0.001, kf_r=kf_r, kp=1.0, kd=1.0,
-            deadband_values=deadband_values,
-            warmup=warmup,
-            warmup_prices_stock=warmup_prices_stock,
-            warmup_prices_bond=warmup_prices_bond,
-        )
-        to_pts = to_scan["threshold_only"]
-        dyn_ref_rmse = max(p["rmse"] for p in to_pts) * ref_multiplier
-        dyn_ref_cost = max(p["ann_cost"] for p in to_pts) * ref_multiplier
 
     def objective(trial):
         kp    = trial.suggest_float("kp", kp_min, kp_max)
@@ -343,17 +291,11 @@ def run_bayesian_opt(
         if not sp_pts:
             return 0.0
 
-        if use_norm:
-            norm_pts = [
-                {"rmse": p["rmse"] / ref_rmse, "cost": p["ann_cost"] / ref_cost}
-                for p in sp_pts
-            ]
-            hv = calc_hypervolume(norm_pts, {"rmse": 1.0, "cost": 1.0})
-        else:
-            hv = calc_hypervolume(
-                [{"rmse": p["rmse"], "cost": p["ann_cost"]} for p in sp_pts],
-                {"rmse": dyn_ref_rmse, "cost": dyn_ref_cost}
-            )
+        norm_pts = [
+            {"rmse": p["rmse"] / ref_rmse, "cost": p["ann_cost"] / ref_cost}
+            for p in sp_pts
+        ]
+        hv = calc_hypervolume(norm_pts, {"rmse": 1.0, "cost": 1.0})
         return hv
 
     # 進度條 callback
@@ -416,7 +358,7 @@ def run_bayesian_opt(
 
 def calc_hypervolume(
     frontier_points: List[dict],
-    reference_point: dict = None,
+    reference_point: dict,
 ) -> float:
     """
     計算 Pareto Frontier 的超體積指標（勒貝格測度）。
@@ -428,8 +370,7 @@ def calc_hypervolume(
         frontier_points: [{"rmse": float, "cost": float}, ...]
                          必須已按 rmse 排序（從小到大）
         reference_point: {"rmse": float, "cost": float}
-                         右上角參考點，動態設置時傳 None，
-                         函數會自動用所有策略中最差點 * 1.1
+                         右上角參考點，使用固定標準化參考點 {"rmse": 1.0, "cost": 1.0}
 
     Returns:
         hypervolume: float（超體積面積）
@@ -439,12 +380,8 @@ def calc_hypervolume(
 
     points = sorted(frontier_points, key=lambda p: p["rmse"])
 
-    if reference_point is None:
-        ref_rmse = max(p["rmse"] for p in points) * 1.1
-        ref_cost = max(p["cost"] for p in points) * 1.1
-    else:
-        ref_rmse = reference_point["rmse"]
-        ref_cost = reference_point["cost"]
+    ref_rmse = reference_point["rmse"]
+    ref_cost = reference_point["cost"]
 
     # 2D 超體積：沿 RMSE 軸掃描，累加矩形面積
     hv = 0.0
@@ -462,36 +399,40 @@ def calc_hypervolume(
     return float(hv)
 
 
-def compare_hypervolumes(pareto_data: dict) -> dict:
+def compare_hypervolumes(
+    pareto_data: dict,
+    norm_ref_rmse: float = 0.08,
+    norm_ref_cost: float = 0.0004,
+) -> dict:
     """
-    計算三個策略的超體積並比較。
+    計算三個策略的標準化超體積並比較。
 
     Args:
         pareto_data: scan_pareto_frontier() 的回傳值
+        norm_ref_rmse: RMSE 標準化參考上限（預設 0.08 = 8%）
+        norm_ref_cost: Cost 標準化參考上限（預設 0.0004 = 0.04%/年）
 
     Returns:
         {
             "smart_pilot": float,
             "threshold_only": float,
             "time_and_threshold": float,
-            "reference_point": {"rmse": float, "cost": float},
             "winner": str,
         }
     """
-    tat_pts = [{"rmse": p["rmse"], "cost": p["ann_cost"]}
-               for p in pareto_data["time_and_threshold"]]
-    all_points = (
-        pareto_data["smart_pilot"] +
-        pareto_data["threshold_only"] +
-        tat_pts
-    )
-    ref_rmse = max(p["rmse"] for p in all_points) * 1.1
-    ref_cost = max(p["cost"] for p in all_points) * 1.1
-    reference_point = {"rmse": ref_rmse, "cost": ref_cost}
+    norm_ref = {"rmse": 1.0, "cost": 1.0}
 
-    hv_sp = calc_hypervolume(pareto_data["smart_pilot"], reference_point)
-    hv_to = calc_hypervolume(pareto_data["threshold_only"], reference_point)
-    hv_tat = calc_hypervolume(tat_pts, reference_point)
+    def _norm_hv(pts):
+        norm_pts = [
+            {"rmse": p["rmse"] / norm_ref_rmse, "cost": p["ann_cost"] / norm_ref_cost}
+            for p in pts
+            if p["rmse"] / norm_ref_rmse <= 1.0 and p["ann_cost"] / norm_ref_cost <= 1.0
+        ]
+        return calc_hypervolume(norm_pts, norm_ref)
+
+    hv_sp  = _norm_hv(pareto_data["smart_pilot"])
+    hv_to  = _norm_hv(pareto_data["threshold_only"])
+    hv_tat = _norm_hv(pareto_data["time_and_threshold"])
 
     scores = {"smart_pilot": hv_sp, "threshold_only": hv_to, "time_and_threshold": hv_tat}
     winner = max(scores, key=scores.get)
@@ -500,6 +441,5 @@ def compare_hypervolumes(pareto_data: dict) -> dict:
         "smart_pilot": hv_sp,
         "threshold_only": hv_to,
         "time_and_threshold": hv_tat,
-        "reference_point": reference_point,
         "winner": winner,
     }
