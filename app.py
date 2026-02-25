@@ -126,53 +126,7 @@ def render_sidebar() -> dict:
     )
 
     # =========================================================================
-    # 區塊 2：Grid Search 參數範圍
-    # =========================================================================
-    st.sidebar.header("⚙️ Grid Search 參數範圍")
-
-    # Kp 設定
-    col1, col2, col3 = st.sidebar.columns(3)
-    with col1:
-        kp_min = st.number_input("Kp 最小值", value=0.1, step=0.1, format="%.1f")
-    with col2:
-        kp_max = st.number_input("Kp 最大值", value=1.0, step=0.1, format="%.1f")
-    with col3:
-        kp_points = st.number_input("Kp 點數", value=10, min_value=3, step=1)
-
-    # Kd 設定
-    col1, col2, col3 = st.sidebar.columns(3)
-    with col1:
-        kd_min = st.number_input("Kd 最小值", value=0.1, step=0.1, format="%.1f")
-    with col2:
-        kd_max = st.number_input("Kd 最大值", value=1.0, step=0.1, format="%.1f")
-    with col3:
-        kd_points = st.number_input("Kd 點數", value=10, min_value=3, step=1)
-
-    # Q 候選值（log scale）
-    col1, col2, col3 = st.sidebar.columns(3)
-    with col1:
-        q_min = st.number_input("Q 最小值", value=0.00001,
-                                 min_value=0.000001, format="%.5f")
-    with col2:
-        q_max = st.number_input("Q 最大值", value=0.1,
-                                 min_value=0.00001, format="%.4f")
-    with col3:
-        q_points = st.number_input("Q 點數", value=5, min_value=2, step=1)
-    q_values = np.logspace(
-        np.log10(q_min), np.log10(q_max), int(q_points)
-    ).tolist()
-
-    # Deadband 設定
-    col1, col2, col3 = st.sidebar.columns(3)
-    with col1:
-        db_min = st.number_input("Deadband 最小值", value=0.005, step=0.005, format="%.3f")
-    with col2:
-        db_max = st.number_input("Deadband 最大值", value=0.10, step=0.005, format="%.3f")
-    with col3:
-        db_points = st.number_input("Deadband 點數", value=15, min_value=3, step=1)
-
-    # =========================================================================
-    # 區塊 3：卡爾曼濾波器設定
+    # 區塊 2：卡爾曼濾波器設定
     # =========================================================================
     st.sidebar.header("🔧 卡爾曼濾波器設定")
 
@@ -213,29 +167,7 @@ def render_sidebar() -> dict:
     )
 
     # =========================================================================
-    # 區塊 3.55：標準化參考點設定
-    # =========================================================================
-    st.sidebar.header("📐 標準化參考點設定")
-    st.sidebar.markdown(
-        "設定標準化 Pareto 圖的右上角參考座標\n"
-        "x 軸(RMSE) 和 y 軸(Cost) 都會除以此值標準化為 0~1"
-    )
-    col1, col2 = st.sidebar.columns(2)
-    with col1:
-        norm_ref_rmse_pct = st.number_input(
-            "參考 RMSE (%)",
-            min_value=0.01, value=8.0, step=0.5, format="%.2f",
-            help="x 軸最大值，單位 %，例如 8 代表 8%"
-        )
-    with col2:
-        norm_ref_cost_pct = st.number_input(
-            "參考 Cost (%/年)",
-            min_value=0.001, value=0.04, step=0.005, format="%.3f",
-            help="y 軸最大值，單位 %/年，例如 0.04 代表 0.04%/年"
-        )
-
-    # =========================================================================
-    # 區塊 3.6：貝氏最佳化設定
+    # 區塊 3：貝氏最佳化設定
     # =========================================================================
     st.sidebar.header("🔍 貝氏最佳化設定")
 
@@ -264,7 +196,7 @@ def render_sidebar() -> dict:
     )
 
     # =========================================================================
-    # 區塊 4：執行計算
+    # 區塊 4：執行計算（核心數設定）
     # =========================================================================
     st.sidebar.header("🚀 執行計算")
 
@@ -276,84 +208,6 @@ def render_sidebar() -> dict:
         max_value=n_cores,
         value=max(1, n_cores - 1)
     )
-
-    # 執行 Grid Search 按鈕
-    if st.sidebar.button("▶ 執行 Grid Search（約 2-5 分鐘）", type="primary"):
-        with st.spinner("載入資料..."):
-            result = load_data(
-                tickers=[ticker1, ticker2],
-                start_date=str(start_date),
-                end_date=str(end_date),
-                warmup_days=warmup,
-            )
-            full_backtest = result["backtest_data"]
-            warmup_prices_stock = result["warmup_data"][ticker1].values
-            warmup_prices_bond = result["warmup_data"][ticker2].values
-            prices_stock = full_backtest[ticker1].values
-            prices_bond = full_backtest[ticker2].values
-            dates = full_backtest.index.tolist()
-            rets_stock = np.diff(prices_stock) / prices_stock[:-1]
-            rets_bond = np.diff(prices_bond) / prices_bond[:-1]
-            prices_stock = prices_stock[1:]
-            prices_bond = prices_bond[1:]
-            dates = dates[1:]
-
-        kp_range = np.linspace(kp_min, kp_max, int(kp_points)).tolist()
-        kd_range = np.linspace(kd_min, kd_max, int(kd_points)).tolist()
-        deadband_values_list = np.linspace(db_min, db_max, int(db_points)).tolist()
-        total_tasks = len(q_values) * len(kp_range) * len(kd_range)
-
-        st.sidebar.info(f"共 {total_tasks} 組參數，使用 {n_jobs} 核心平行運算")
-        progress_bar = st.sidebar.progress(0)
-        status_text = st.sidebar.empty()
-        status_text.text(f"Grid Search 進度：0/{total_tasks}")
-
-        t0 = time.time()
-        from core.optimizer import run_grid_search_with_progress, find_best_from_grid
-        results = run_grid_search_with_progress(
-            rets_stock, rets_bond, prices_stock, prices_bond, dates,
-            target_w=target_w,
-            fee_rate=fee_rate,
-            kp_range=kp_range,
-            kd_range=kd_range,
-            q_values=q_values,
-            deadband_values=deadband_values_list,
-            n_jobs=n_jobs,
-            kf_r=kf_r,
-            warmup=warmup,
-            ref_multiplier=1.1,
-            warmup_prices_stock=warmup_prices_stock,
-            warmup_prices_bond=warmup_prices_bond,
-            progress_bar=progress_bar,
-            status_text=status_text,
-            total_tasks=total_tasks,
-        )
-        best = find_best_from_grid(results)
-        elapsed = time.time() - t0
-
-        progress_bar.progress(1.0)
-        status_text.text(f"完成！共 {total_tasks} 組，耗時 {elapsed:.1f} 秒")
-
-        cache_path = Path("data/cache/grid_search_results.json")
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(cache_path, "w", encoding="utf-8") as f:
-            json.dump({
-                "results": results,
-                "best": best,
-                "metadata": {
-                    "q_values": q_values,
-                    "kp_range": kp_range,
-                    "kd_range": kd_range,
-                    "deadband_values": deadband_values_list,
-                }
-            }, f, ensure_ascii=False, indent=2)
-
-        load_grid_cache.clear()
-        st.sidebar.success(
-            f"Grid Search 完成！共 {len(results)} 組，耗時 {elapsed:.1f} 秒\n"
-            f"最佳：Kp={best['kp']:.2f}, Kd={best['kd']:.2f}, "
-            f"Q={best['q']:.5f}, HV={best['hypervolume'] * 10000:.4f}"
-        )
 
     if st.sidebar.button("▶ 執行貝氏最佳化（約 3-8 分鐘）", type="primary"):
         with st.spinner("載入資料..."):
@@ -387,13 +241,13 @@ def render_sidebar() -> dict:
             prices_stock_bt, prices_bond_bt, dates_bt,
             target_w=target_w,
             fee_rate=fee_rate,
-            deadband_values=np.linspace(db_min, db_max, int(db_points)).tolist(),
+            deadband_values=np.linspace(0.005, 0.10, 15).tolist(),
             kf_r=kf_r,
             warmup=warmup,
             warmup_prices_stock=wm_prices_stock,
             warmup_prices_bond=wm_prices_bond,
-            ref_rmse=norm_ref_rmse_pct / 100,
-            ref_cost=norm_ref_cost_pct / 100,
+            ref_rmse=0.08,
+            ref_cost=0.0004,
             kp_min=bayes_kp_min, kp_max=bayes_kp_max,
             kd_min=bayes_kd_min, kd_max=bayes_kd_max,
             q_min=bayes_q_min,   q_max=bayes_q_max,
@@ -492,16 +346,13 @@ def render_sidebar() -> dict:
         "start_date": start_date,
         "end_date": end_date,
         "fee_rate": fee_rate,
-        "kp": kp_min,
-        "kd": kd_min,
-        "kf_q": q_values[0] if q_values else 0.001,
+        "kp": 0.5,
+        "kd": 0.5,
+        "kf_q": 0.001,
         "kf_r": kf_r,
-        "deadband": db_min,
+        "deadband": 0.02,
         "warmup": warmup,
-        "kp_range": np.linspace(kp_min, kp_max, int(kp_points)).tolist(),
-        "kd_range": np.linspace(kd_min, kd_max, int(kd_points)).tolist(),
-        "q_values": q_values,
-        "deadband_values": np.linspace(db_min, db_max, int(db_points)).tolist(),
+        "deadband_values": np.linspace(0.005, 0.10, 15).tolist(),
         "n_jobs": n_jobs,
         "d_clip": d_clip,
         "output_clip": output_clip,
@@ -512,8 +363,6 @@ def render_sidebar() -> dict:
         "bayes_q_min":  bayes_q_min,
         "bayes_q_max":  bayes_q_max,
         "bayes_n_trials": bayes_n_trials,
-        "norm_ref_rmse": norm_ref_rmse_pct / 100,
-        "norm_ref_cost": norm_ref_cost_pct / 100,
     }
 
 
@@ -665,8 +514,8 @@ def render_tab_pareto(params: dict, data: pd.DataFrame,
 
     with st.expander("📊 標準化 Pareto 圖", expanded=True):
 
-        norm_ref_rmse = params["norm_ref_rmse"]
-        norm_ref_cost = params["norm_ref_cost"]
+        norm_ref_rmse = 0.08
+        norm_ref_cost = 0.0004
 
         # 標準化函式
         def normalize_points(points):
@@ -1086,9 +935,9 @@ def render_tab_rolling(params: dict, data: pd.DataFrame,
                 is_years=int(is_years),
                 oos_years=int(oos_years),
                 n_trials=int(wf_n_trials),
-                deadband_values=params["deadband_values"],
-                norm_ref_rmse=params["norm_ref_rmse"],
-                norm_ref_cost=params["norm_ref_cost"],
+                deadband_values=np.linspace(0.005, 0.10, 15).tolist(),
+                norm_ref_rmse=0.08,
+                norm_ref_cost=0.0004,
                 kp_min=params["bayes_kp_min"],
                 kp_max=params["bayes_kp_max"],
                 kd_min=params["bayes_kd_min"],
