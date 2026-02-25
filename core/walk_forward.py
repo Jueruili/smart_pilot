@@ -30,6 +30,7 @@ def run_walk_forward(
     output_clip: float = 0.2,
     is_years: int = 5,
     oos_years: int = 2,
+    step_years: int = 1,
     n_trials: int = 50,
     deadband_values: list = None,
     norm_ref_rmse: float = 0.08,
@@ -49,8 +50,9 @@ def run_walk_forward(
             "oos_years": int,
         }
     """
-    is_days  = is_years  * 252
-    oos_days = oos_years * 252
+    is_days   = is_years   * 252
+    oos_days  = oos_years  * 252
+    step_days = step_years * 252
     total_days = len(dates)
 
     if deadband_values is None:
@@ -231,11 +233,12 @@ def run_walk_forward(
             "oos_tat":   oos_tat,
         })
 
-        start_idx += oos_days
+        start_idx += step_days
         round_num += 1
 
     return {
-        "rounds":    rounds,
-        "is_years":  is_years,
-        "oos_years": oos_years,
+        "rounds":     rounds,
+        "is_years":   is_years,
+        "oos_years":  oos_years,
+        "step_years": step_years,
     }

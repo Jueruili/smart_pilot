@@ -1001,10 +1001,10 @@ def render_tab_rolling(params: dict, data: pd.DataFrame,
 
     st.markdown("""
     每一輪包含：
-    - **IS（樣本內）**：貝氏最佳化尋找最佳 (Kp, Kd, Q)，最大化動態超體積
+    - **IS（樣本內）**：貝氏最佳化尋找最佳 (Kp, Kd, Q)，最大化標準化超體積
     - **OOS（樣本外）**：套用 IS 最佳參數，三策略直接回測，不再最佳化
     - **窗口步進**：可自訂步進年數（預設 1 年）
-    - **OOS HV 參考點**：每輪動態計算（三策略最差點 × 倍數），跨輪可比較
+    - **OOS HV 參考點**：與 IS 相同的固定參考點，IS/OOS HV 直接可比
     """)
 
     # ── Walk-Forward 參數設定 ──
@@ -1023,13 +1023,25 @@ def render_tab_rolling(params: dict, data: pd.DataFrame,
             help="每輪窗口向後移動幾年，預設 1 年（最密集）"
         )
 
-    # ── OOS HV 參考點倍數 ──
-    wf_ref_multiplier = st.number_input(
-        "OOS 參考點倍數",
-        min_value=0.5, max_value=3.0, value=1.1, step=0.1, format="%.1f",
-        help="每輪 OOS 三策略最差點 × 此倍數作為 HV 參考點，預設 1.1",
-        key="wf_ref_multiplier"
-    )
+    st.markdown("---")
+    st.markdown("**OOS HV 參考點設定**（與 IS 共用同一組，HV 才能直接比較）")
+    col1, col2 = st.columns(2)
+    with col1:
+        wf_ref_rmse_pct = st.number_input(
+            "參考 RMSE (%)",
+            min_value=0.01, value=8.0, step=0.5, format="%.2f",
+            help="x 軸最大值，單位 %，例如 8 代表 8%",
+            key="wf_ref_rmse"
+        )
+    with col2:
+        wf_ref_cost_pct = st.number_input(
+            "參考 Cost (%/年)",
+            min_value=0.001, value=0.08, step=0.01, format="%.3f",
+            help="y 軸最大值，單位 %/年，例如 0.08 代表 0.08%/年",
+            key="wf_ref_cost"
+        )
+    wf_norm_ref_rmse = wf_ref_rmse_pct / 100
+    wf_norm_ref_cost = wf_ref_cost_pct / 100
 
     prices_stock = data[params["ticker1"]].values
     prices_bond  = data[params["ticker2"]].values
@@ -1054,7 +1066,7 @@ def render_tab_rolling(params: dict, data: pd.DataFrame,
 
     if st.button("▶ 執行 Walk-Forward 分析", type="primary"):
         with st.spinner("執行中，請耐心等候..."):
-            from validation.walk_forward import run_walk_forward
+            from core.walk_forward import run_walk_forward
             wf_result = run_walk_forward(
                 prices_stock, prices_bond, dates,
                 warmup_prices_stock=warmup_prices_stock,
@@ -1069,9 +1081,8 @@ def render_tab_rolling(params: dict, data: pd.DataFrame,
                 step_years=int(step_years),
                 n_trials=int(params["bayes_n_trials"]),
                 deadband_values=params["deadband_values"],
-                norm_ref_rmse=0.08,
-                norm_ref_cost=0.0008,
-                ref_multiplier=wf_ref_multiplier,
+                norm_ref_rmse=wf_norm_ref_rmse,
+                norm_ref_cost=wf_norm_ref_cost,
                 kp_min=params["bayes_kp_min"],
                 kp_max=params["bayes_kp_max"],
                 kd_min=params["bayes_kd_min"],
@@ -1168,13 +1179,13 @@ def render_tab_rolling(params: dict, data: pd.DataFrame,
             line=dict(color="#00CED1", dash="dot", width=2),
             marker=dict(symbol="diamond", size=8),
         ), secondary_y=True)
-        fig_perf.update_yaxes(title_text="OOS 超體積（動態參考點）", secondary_y=False)
+        fig_perf.update_yaxes(title_text="OOS 超體積（固定參考點）", secondary_y=False)
         fig_perf.update_yaxes(title_text="OOS 年化波動率 (%)", secondary_y=True)
         fig_perf.update_layout(barmode="group", hovermode="x unified", height=500)
         st.plotly_chart(fig_perf, use_container_width=True)
         st.caption(
-            f"OOS HV 使用動態參考點（每輪三策略最差點 × {wf_ref_multiplier}），"
-            "各輪之間可直接比較大小。"
+            f"OOS HV 使用固定參考點（RMSE={wf_ref_rmse_pct:.1f}%，"
+            f"Cost={wf_ref_cost_pct:.3f}%/年），與 IS HV 同一尺度，衰退比值有意義。"
         )
 
         # ── 圖三：參數穩定性追蹤 ──
@@ -1249,8 +1260,6 @@ def render_tab_rolling(params: dict, data: pd.DataFrame,
                 f"{r['oos_sp_hv']/r['is_hv']:.3f}" if r["is_hv"] > 0 else "N/A"
                 for r in rounds
             ],
-            "OOS 參考點 RMSE": [f"{r['dyn_ref_rmse']*100:.3f}%" for r in rounds],
-            "OOS 參考點 Cost": [f"{r['dyn_ref_cost']*100:.4f}%" for r in rounds],
             "最佳 Kp": [f"{r['best_kp']:.3f}" for r in rounds],
             "最佳 Kd": [f"{r['best_kd']:.3f}" for r in rounds],
             "最佳 Q":  [f"{r['best_q']:.6f}"  for r in rounds],
@@ -1258,7 +1267,7 @@ def render_tab_rolling(params: dict, data: pd.DataFrame,
         st.dataframe(overfit_df, use_container_width=True, hide_index=True)
         st.caption(
             "衰退比值接近 1.0 → 無過擬合；遠小於 1.0（如 < 0.5）→ 可能過擬合。\n"
-            "注意：IS HV 與 OOS HV 使用不同參考點，衰退比值僅供趨勢參考。"
+            "IS HV 與 OOS HV 使用相同參考點，衰退比值可直接判讀。"
         )
 
 
