@@ -356,8 +356,12 @@ def run_bayesian_opt(
             )
         return hv
 
-    # 進度條 callback
-    def progress_callback(study, trial):
+    study = optuna.create_study(
+        direction="maximize",
+        sampler=optuna.samplers.TPESampler(seed=42),
+    )
+    for i in range(n_trials):
+        study.optimize(objective, n_trials=1, n_jobs=1, show_progress_bar=False)
         completed = len(study.trials)
         if progress_bar is not None:
             progress_bar.progress(min(completed / n_trials, 1.0))
@@ -367,19 +371,6 @@ def run_bayesian_opt(
                 f"貝氏最佳化進度：{completed}/{n_trials}  "
                 f"目前最佳 HV={best_so_far:.6f}"
             )
-
-    study = optuna.create_study(
-        direction="maximize",
-        sampler=optuna.samplers.TPESampler(seed=42),
-    )
-    study.optimize(
-        objective,
-        n_trials=n_trials,
-        n_jobs=n_jobs,
-        show_progress_bar=False,
-        callbacks=[progress_callback],
-    )
-
     best_params = study.best_params
     best_kp = best_params["kp"]
     best_kd = best_params["kd"]
