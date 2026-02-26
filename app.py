@@ -1499,39 +1499,58 @@ def render_tab_walking_forward(params: dict, data: pd.DataFrame,
     )
     st.plotly_chart(fig_params, use_container_width=True)
 
-    # ── 表格一：OOS 綜合績效指標比較 ──
-    st.subheader("表格一：OOS 綜合績效指標比較（所有輪次平均）")
+    # ── 表格：每個 Round 三策略詳細指標 ──
+    st.subheader("各輪次三策略詳細指標")
 
-    def collect_metrics(key):
-        rows = []
-        for r in rounds:
-            m = r[key]["metrics"]
-            rows.append({
-                "交易次數":   r[key]["trade_count"],
-                "總周轉率":   r[key]["turnover"],
-                "RMSE":      r[key]["rmse"],
-                "年化報酬率": m["ann_return"],
-                "夏普值":     m["sharpe"],
-                "最大回撤":   m["max_drawdown"],
-                "年化波動率": m["ann_wealth_vol"],
+    table_rows = []
+    for r in rounds:
+        round_label = f"Round {r['round']} OOS ({r['oos_start'].strftime('%Y/%m')}~{r['oos_end'].strftime('%Y/%m')})"
+        for strategy_key, strategy_name in [
+            ("oos_sp",  "Smart Pilot"),
+            ("oos_to",  "Threshold-only"),
+            ("oos_tat", "Time-and-threshold"),
+        ]:
+            res = r[strategy_key]
+            m = res["metrics"]
+            table_rows.append({
+                "Round":   round_label,
+                "策略":    strategy_name,
+                "交易次數": res["trade_count"],
+                "總周轉率": f"{res['turnover']:.3f}",
+                "RMSE":    f"{res['rmse']*100:.2f}%",
+                "年化報酬": f"{m['ann_return']*100:.2f}%",
+                "Sharpe":  f"{m['sharpe']:.2f}",
+                "MDD":     f"{m['max_drawdown']*100:.2f}%",
+                "年化波動": f"{m['ann_wealth_vol']*100:.2f}%",
             })
-        return pd.DataFrame(rows).mean()
 
-    avg_sp  = collect_metrics("oos_sp")
-    avg_to  = collect_metrics("oos_to")
-    avg_tat = collect_metrics("oos_tat")
+    # 平均列
+    for strategy_key, strategy_name in [
+        ("oos_sp",  "Smart Pilot"),
+        ("oos_to",  "Threshold-only"),
+        ("oos_tat", "Time-and-threshold"),
+    ]:
+        avg_trades = np.mean([r[strategy_key]["trade_count"]               for r in rounds])
+        avg_to_val = np.mean([r[strategy_key]["turnover"]                  for r in rounds])
+        avg_rmse   = np.mean([r[strategy_key]["rmse"]                      for r in rounds])
+        avg_ret    = np.mean([r[strategy_key]["metrics"]["ann_return"]      for r in rounds])
+        avg_sharpe = np.mean([r[strategy_key]["metrics"]["sharpe"]          for r in rounds])
+        avg_mdd    = np.mean([r[strategy_key]["metrics"]["max_drawdown"]    for r in rounds])
+        avg_vol    = np.mean([r[strategy_key]["metrics"]["ann_wealth_vol"]  for r in rounds])
+        table_rows.append({
+            "Round":   "**平均**",
+            "策略":    strategy_name,
+            "交易次數": f"{avg_trades:.1f}",
+            "總周轉率": f"{avg_to_val:.3f}",
+            "RMSE":    f"{avg_rmse*100:.2f}%",
+            "年化報酬": f"{avg_ret*100:.2f}%",
+            "Sharpe":  f"{avg_sharpe:.2f}",
+            "MDD":     f"{avg_mdd*100:.2f}%",
+            "年化波動": f"{avg_vol*100:.2f}%",
+        })
 
-    summary_df = pd.DataFrame({
-        "策略": ["Smart Pilot", "Threshold-only", "Time-and-threshold"],
-        "交易次數(均)":  [f"{avg_sp['交易次數']:.1f}",       f"{avg_to['交易次數']:.1f}",       f"{avg_tat['交易次數']:.1f}"],
-        "總周轉率(均)":  [f"{avg_sp['總周轉率']:.3f}",       f"{avg_to['總周轉率']:.3f}",       f"{avg_tat['總周轉率']:.3f}"],
-        "RMSE(均)":     [f"{avg_sp['RMSE']*100:.2f}%",      f"{avg_to['RMSE']*100:.2f}%",      f"{avg_tat['RMSE']*100:.2f}%"],
-        "年化報酬(均)":  [f"{avg_sp['年化報酬率']*100:.2f}%",f"{avg_to['年化報酬率']*100:.2f}%",f"{avg_tat['年化報酬率']*100:.2f}%"],
-        "Sharpe(均)":   [f"{avg_sp['夏普值']:.2f}",         f"{avg_to['夏普值']:.2f}",         f"{avg_tat['夏普值']:.2f}"],
-        "MDD(均)":      [f"{avg_sp['最大回撤']*100:.2f}%",  f"{avg_to['最大回撤']*100:.2f}%",  f"{avg_tat['最大回撤']*100:.2f}%"],
-        "年化波動率(均)":[f"{avg_sp['年化波動率']*100:.2f}%",f"{avg_to['年化波動率']*100:.2f}%",f"{avg_tat['年化波動率']*100:.2f}%"],
-    })
-    st.dataframe(summary_df, use_container_width=True, hide_index=True)
+    detail_df = pd.DataFrame(table_rows)
+    st.dataframe(detail_df, use_container_width=True, hide_index=True)
 
     # ── 表格二：過度擬合檢驗 ──
     st.subheader("表格二：過度擬合檢驗（Smart Pilot IS vs OOS）")

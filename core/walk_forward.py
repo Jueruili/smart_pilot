@@ -39,6 +39,8 @@ def run_walk_forward(
     kd_min: float = 0.01, kd_max: float = 5.0,
     q_min: float = 1e-5,  q_max: float = 1.0,
     n_jobs: int = 1,
+    progress_bar=None,
+    status_text=None,
 ) -> dict:
     """
     執行 Walk-Forward 滾動窗口分析。
@@ -57,6 +59,9 @@ def run_walk_forward(
 
     if deadband_values is None:
         deadband_values = np.linspace(0.005, 0.10, 15).tolist()
+
+    # 預先計算總輪數（供進度條使用）
+    n_rounds = max(0, (total_days - is_days - oos_days) // step_days + 1)
 
     rounds = []
     start_idx = 0
@@ -232,6 +237,15 @@ def run_walk_forward(
             "oos_to":    oos_to,
             "oos_tat":   oos_tat,
         })
+
+        # 每輪結束後更新進度
+        if progress_bar is not None:
+            progress_bar.progress((round_num) / n_rounds)
+        if status_text is not None:
+            status_text.text(
+                f"Walk-Forward 進度：{round_num}/{n_rounds} 輪完成"
+                f"（IS: {is_dates[0].strftime('%Y/%m/%d')} ~ {is_dates[-1].strftime('%Y/%m/%d')}）"
+            )
 
         start_idx += step_days
         round_num += 1
