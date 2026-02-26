@@ -401,7 +401,6 @@ def render_sidebar() -> dict:
                         "kd": bayes_result["kd"],
                         "q":  bayes_result["q"],
                         "hypervolume": bayes_result["hypervolume"],
-                        "hypervolume_x10000": bayes_result["hypervolume_x10000"],
                         "n_trials": bayes_result["n_trials"],
                         "params_hash": current_hash,
                     }, f, ensure_ascii=False, indent=2)
@@ -412,7 +411,6 @@ def render_sidebar() -> dict:
                     f"Kd={bayes_result['kd']:.3f}, "
                     f"Q={bayes_result['q']:.6f}\n"
                     f"HV={bayes_result['hypervolume']:.6f}"
-                    f"（×10000 = {bayes_result['hypervolume_x10000']:.4f}）"
                 )
 
     # =========================================================================
@@ -677,23 +675,11 @@ def render_tab_pareto(params: dict, data: pd.DataFrame,
     st.subheader("超體積指標 (Hypervolume)")
     col1, col2, col3 = st.columns(3)
     with col1:
-        st.metric(
-            "Smart Pilot",
-            f"{hv_sp:.6f}",
-            help=f"×10000 = {hv_sp * 10000:.4f}"
-        )
+        st.metric("Smart Pilot", f"{hv_sp:.6f}")
     with col2:
-        st.metric(
-            "Threshold-only",
-            f"{hv_to:.6f}",
-            help=f"×10000 = {hv_to * 10000:.4f}"
-        )
+        st.metric("Threshold-only", f"{hv_to:.6f}")
     with col3:
-        st.metric(
-            "Time-and-threshold",
-            f"{hv_tat:.6f}",
-            help=f"×10000 = {hv_tat * 10000:.4f}"
-        )
+        st.metric("Time-and-threshold", f"{hv_tat:.6f}")
 
     winner = hv_comparison["winner"]
     if winner == "smart_pilot":
@@ -787,23 +773,11 @@ def render_tab_pareto(params: dict, data: pd.DataFrame,
         st.subheader("標準化超體積指標")
         col1, col2, col3 = st.columns(3)
         with col1:
-            st.metric(
-                "Smart Pilot",
-                f"{hv_sp_norm:.6f}",
-                help=f"×10000 = {hv_sp_norm * 10000:.4f}"
-            )
+            st.metric("Smart Pilot", f"{hv_sp_norm:.6f}")
         with col2:
-            st.metric(
-                "Threshold-only",
-                f"{hv_to_norm:.6f}",
-                help=f"×10000 = {hv_to_norm * 10000:.4f}"
-            )
+            st.metric("Threshold-only", f"{hv_to_norm:.6f}")
         with col3:
-            st.metric(
-                "Time-and-threshold",
-                f"{hv_tat_norm:.6f}",
-                help=f"×10000 = {hv_tat_norm * 10000:.4f}"
-            )
+            st.metric("Time-and-threshold", f"{hv_tat_norm:.6f}")
 
         norm_scores = {
             "Smart Pilot": hv_sp_norm,
@@ -974,7 +948,7 @@ def render_tab_heatmap(params: dict, data: pd.DataFrame,
             st.success(
                 f"Grid Search 完成！共 {len(results)} 組，耗時 {elapsed:.1f} 秒\n"
                 f"最佳：Kp={best['kp']:.2f}, Kd={best['kd']:.2f}, "
-                f"Q={best['q']:.5f}, HV={best['hypervolume']*10000:.4f}"
+                f"Q={best['q']:.5f}, HV={best['hypervolume']:.6f}"
             )
 
     grid_cache = load_grid_cache()
@@ -1017,15 +991,15 @@ def render_tab_heatmap(params: dict, data: pd.DataFrame,
     for r in q_results:
         i = kd_vals.index(r["kd"])
         j = kp_vals.index(r["kp"])
-        heatmap_data[i, j] = r["hypervolume"] * 10000
+        heatmap_data[i, j] = r["hypervolume"]
 
     fig = go.Figure(data=go.Heatmap(
         z=heatmap_data,
         x=[f"{kp:.2f}" for kp in kp_vals],
         y=[f"{kd:.2f}" for kd in kd_vals],
         colorscale="Viridis",
-        colorbar=dict(title="Hypervolume (%%)"),
-        hovertemplate="Kp: %{x}<br>Kd: %{y}<br>HV: %{z:.4f} %%<extra></extra>"
+        colorbar=dict(title="Hypervolume"),
+        hovertemplate="Kp: %{x}<br>Kd: %{y}<br>HV: %{z:.6f}<extra></extra>"
     ))
 
     # 標記最佳點
@@ -1056,7 +1030,7 @@ def render_tab_heatmap(params: dict, data: pd.DataFrame,
     with col3:
         st.metric("Q", f"{best['q']:.6f}")
     with col4:
-        st.metric("Hypervolume", f"{best['hypervolume'] * 10000:.4f} %%")
+        st.metric("Hypervolume", f"{best['hypervolume']:.6f}")
 
     # 貝氏最佳化結果
     bayes_path = Path("data/cache/bayesian_opt_results.json")
@@ -1073,11 +1047,7 @@ def render_tab_heatmap(params: dict, data: pd.DataFrame,
         with col3:
             st.metric("Q",  f"{bayes_cache['q']:.6f}")
         with col4:
-            st.metric(
-                "Hypervolume",
-                f"{bayes_cache['hypervolume']:.6f}",
-                help=f"×10000 = {bayes_cache['hypervolume_x10000']:.4f}"
-            )
+            st.metric("Hypervolume", f"{bayes_cache['hypervolume']:.6f}")
         st.caption(f"試驗次數：{bayes_cache.get('n_trials', 'N/A')}")
     else:
         st.info("尚未執行貝氏最佳化，請在側邊欄執行。")
@@ -1168,7 +1138,7 @@ def render_tab_heatmap(params: dict, data: pd.DataFrame,
             st.markdown("**測試結果：**")
             col1, col2, col3, col4 = st.columns(4)
             with col1:
-                st.metric("超體積", f"{hv * 10000:.4f} %%")
+                st.metric("超體積", f"{hv:.6f}")
             with col2:
                 st.metric("RMSE", f"{result['rmse'] * 100:.3f}%")
             with col3:
@@ -1196,13 +1166,13 @@ def render_tab_heatmap(params: dict, data: pd.DataFrame,
                 delta_hv = hv - best["hypervolume"]
                 if delta_hv >= 0:
                     st.success(
-                        f"這組參數的超體積比 Grid Search 最佳結果高 {delta_hv * 10000:.4f} %%"
+                        f"這組參數的超體積比 Grid Search 最佳結果高 {delta_hv:.6f}"
                     )
                 else:
                     st.info(
                         f"Grid Search 最佳：Kp={best['kp']:.2f}, "
                         f"Kd={best['kd']:.2f}, Q={best['q']:.5f}, "
-                        f"HV={best['hypervolume'] * 10000:.4f} %%（差距 {abs(delta_hv) * 10000:.4f} %%）"
+                        f"HV={best['hypervolume']:.6f}（差距 {abs(delta_hv):.6f}）"
                     )
             else:
                 st.caption("尚未執行 Grid Search，無法比較最佳結果")
