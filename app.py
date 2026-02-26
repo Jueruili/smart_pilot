@@ -92,133 +92,126 @@ def render_sidebar() -> dict:
     """渲染側邊欄並返回參數"""
 
     # =========================================================================
+    # session_state 初始化（只在 key 不存在時設預設值）
+    # =========================================================================
+    defaults = {
+        "ticker1": "VTI", "ticker2": "BND",
+        "target_w": 0.6, "start_date": date(2013, 1, 1),
+        "end_date": date(2024, 1, 1), "fee_rate": 0.003,
+        "warmup": 20, "kf_r": 0.005, "d_clip": 0.15, "output_clip": 0.2,
+        "norm_ref_rmse_pct": 8.0, "norm_ref_cost_pct": 0.04,
+        "bayes_kp_min": 0.01, "bayes_kp_max": 5.0,
+        "bayes_kd_min": 0.01, "bayes_kd_max": 5.0,
+        "bayes_q_min": 0.00001, "bayes_q_max": 1.0,
+        "bayes_n_trials": 50,
+    }
+    for k, v in defaults.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
+
+    # =========================================================================
     # 區塊 1：標的設定
     # =========================================================================
     st.sidebar.header("📈 標的設定")
-
-    ticker1 = st.sidebar.text_input("股票標的", value="VTI").upper().strip()
-    ticker2 = st.sidebar.text_input("債券標的", value="BND").upper().strip()
-
-    target_w = st.sidebar.slider(
-        "目標股票比例",
-        min_value=0.1,
-        max_value=0.9,
-        value=0.6,
-        step=0.05,
-        format="%.2f"
-    )
-
-    start_date = st.sidebar.date_input(
-        "回測開始日期",
-        value=date(2013, 1, 1)
-    )
-
-    end_date = st.sidebar.date_input(
-        "回測結束日期",
-        value=date(2024, 1, 1)
-    )
-
-    fee_rate = st.sidebar.number_input(
-        "手續費率",
-        value=0.003,
-        step=0.001,
-        format="%.3f"
-    )
+    with st.sidebar.form("form_target"):
+        ticker1 = st.text_input("股票標的", value=st.session_state["ticker1"])
+        ticker2 = st.text_input("債券標的", value=st.session_state["ticker2"])
+        target_w = st.slider(
+            "目標股票比例",
+            min_value=0.1, max_value=0.9,
+            value=float(st.session_state["target_w"]),
+            step=0.05, format="%.2f"
+        )
+        start_date = st.date_input("回測開始日期", value=st.session_state["start_date"])
+        end_date = st.date_input("回測結束日期", value=st.session_state["end_date"])
+        fee_rate = st.number_input(
+            "手續費率",
+            value=float(st.session_state["fee_rate"]),
+            step=0.001, format="%.3f"
+        )
+        submitted_target = st.form_submit_button("更改標的設定", use_container_width=True)
+        if submitted_target:
+            st.session_state.update({
+                "ticker1": ticker1.upper().strip(),
+                "ticker2": ticker2.upper().strip(),
+                "target_w": target_w,
+                "start_date": start_date,
+                "end_date": end_date,
+                "fee_rate": fee_rate,
+            })
 
     # =========================================================================
     # 區塊 2：卡爾曼濾波器設定
     # =========================================================================
     st.sidebar.header("🔧 卡爾曼濾波器設定")
-
-    warmup = st.sidebar.number_input(
-        "暖機天數",
-        min_value=10,
-        max_value=100,
-        value=20,
-        step=1,
-        help="回測起始日前的暖機天數，使用前一年底的歷史資料初始化 KF，建議 20 天"
-    )
-
-    kf_r = st.sidebar.number_input(
-        "R 值（觀測雜訊）",
-        value=0.005,
-        min_value=0.0001,
-        step=0.001,
-        format="%.4f",
-        help="R 越大越平滑但反應越慢，建議 0.001~0.01"
-    )
-
-    d_clip = st.sidebar.number_input(
-        "D Clip",
-        value=0.15,
-        min_value=0.01,
-        step=0.01,
-        format="%.2f",
-        help="D 項裁切閾值，預設 0.15"
-    )
-
-    output_clip = st.sidebar.number_input(
-        "Output Clip",
-        value=0.2,
-        min_value=0.01,
-        step=0.01,
-        format="%.2f",
-        help="總輸出裁切閾值，預設 0.2"
-    )
+    with st.sidebar.form("form_kf"):
+        warmup = st.number_input(
+            "暖機天數",
+            min_value=10, max_value=100,
+            value=int(st.session_state["warmup"]),
+            step=1,
+            help="回測起始日前的暖機天數，使用前一年底的歷史資料初始化 KF，建議 20 天"
+        )
+        kf_r = st.number_input(
+            "R 值（觀測雜訊）",
+            value=float(st.session_state["kf_r"]),
+            min_value=0.0001, step=0.001, format="%.4f",
+            help="R 越大越平滑但反應越慢，建議 0.001~0.01"
+        )
+        d_clip = st.number_input(
+            "D Clip",
+            value=float(st.session_state["d_clip"]),
+            min_value=0.01, step=0.01, format="%.2f",
+            help="D 項裁切閾值，預設 0.15"
+        )
+        output_clip = st.number_input(
+            "Output Clip",
+            value=float(st.session_state["output_clip"]),
+            min_value=0.01, step=0.01, format="%.2f",
+            help="總輸出裁切閾值，預設 0.2"
+        )
+        submitted_kf = st.form_submit_button("更改卡爾曼濾波器設定", use_container_width=True)
+        if submitted_kf:
+            st.session_state.update({
+                "warmup": warmup,
+                "kf_r": kf_r,
+                "d_clip": d_clip,
+                "output_clip": output_clip,
+            })
 
     # =========================================================================
     # 區塊 3：標準化參考點設定
     # =========================================================================
     st.sidebar.header("📐 標準化參考點設定")
-
-    col1, col2 = st.sidebar.columns(2)
-    with col1:
-        norm_ref_rmse_pct = st.sidebar.number_input(
-            "參考 RMSE (%)", min_value=0.01, value=8.0, step=0.5, format="%.2f",
-            help="RMSE 參考上限，例如 8 代表 8%"
-        )
-    with col2:
-        norm_ref_cost_pct = st.sidebar.number_input(
-            "參考 Cost (%/年)", min_value=0.001, value=0.04, step=0.005, format="%.3f",
-            help="Cost 參考上限，例如 0.04 代表 0.04%/年"
-        )
-    norm_ref_rmse = norm_ref_rmse_pct / 100
-    norm_ref_cost = norm_ref_cost_pct / 100
+    with st.sidebar.form("form_norm"):
+        col1, col2 = st.columns(2)
+        with col1:
+            norm_ref_rmse_pct = st.number_input(
+                "參考 RMSE (%)", min_value=0.01,
+                value=float(st.session_state["norm_ref_rmse_pct"]),
+                step=0.5, format="%.2f",
+                help="RMSE 參考上限，例如 8 代表 8%"
+            )
+        with col2:
+            norm_ref_cost_pct = st.number_input(
+                "參考 Cost (%/年)", min_value=0.001,
+                value=float(st.session_state["norm_ref_cost_pct"]),
+                step=0.005, format="%.3f",
+                help="Cost 參考上限，例如 0.04 代表 0.04%/年"
+            )
+        submitted_norm = st.form_submit_button("更改參考點設定", use_container_width=True)
+        if submitted_norm:
+            st.session_state.update({
+                "norm_ref_rmse_pct": norm_ref_rmse_pct,
+                "norm_ref_cost_pct": norm_ref_cost_pct,
+            })
 
     # =========================================================================
-    # 區塊 4：貝氏最佳化設定
+    # 區塊 4：貝氏最佳化設定 + 執行
     # =========================================================================
     st.sidebar.header("🔍 貝氏最佳化設定")
 
-    col1, col2 = st.sidebar.columns(2)
-    with col1:
-        bayes_kp_min = st.number_input("Kp 下限", value=0.01, min_value=0.001,
-                                        step=0.01, format="%.3f", key="bayes_kp_min")
-        bayes_kd_min = st.number_input("Kd 下限", value=0.01, min_value=0.001,
-                                        step=0.01, format="%.3f", key="bayes_kd_min")
-    with col2:
-        bayes_kp_max = st.number_input("Kp 上限", value=5.0, min_value=0.1,
-                                        step=0.5, format="%.1f", key="bayes_kp_max")
-        bayes_kd_max = st.number_input("Kd 上限", value=5.0, min_value=0.1,
-                                        step=0.5, format="%.1f", key="bayes_kd_max")
-
-    col1, col2 = st.sidebar.columns(2)
-    with col1:
-        bayes_q_min = st.number_input("Q 下限", value=0.00001, min_value=0.000001,
-                                       format="%.5f", key="bayes_q_min")
-    with col2:
-        bayes_q_max = st.number_input("Q 上限", value=1.0, min_value=0.00001,
-                                       format="%.4f", key="bayes_q_max")
-
-    bayes_n_trials = st.sidebar.number_input(
-        "試驗次數 (trials)", value=50, min_value=10, step=10, key="bayes_n_trials"
-    )
-
-    # =========================================================================
-    # 區塊 5：執行計算（核心數設定）
-    # =========================================================================
-    st.sidebar.header("🚀 執行計算")
-
+    # n_jobs 放在 form 外面（立即生效）
     n_cores = os.cpu_count() or 1
     st.sidebar.write(f"你的電腦有 {n_cores} 個核心")
     n_jobs = st.sidebar.slider(
@@ -228,83 +221,142 @@ def render_sidebar() -> dict:
         value=max(1, n_cores - 1)
     )
 
-    if st.sidebar.button("▶ 執行貝氏最佳化（約 3-8 分鐘）", type="primary"):
-        with st.spinner("載入資料..."):
-            result_data = load_data(
-                tickers=[ticker1, ticker2],
-                start_date=str(start_date),
-                end_date=str(end_date),
-                warmup_days=warmup,
+    with st.sidebar.form("form_bayes"):
+        col1, col2 = st.columns(2)
+        with col1:
+            bayes_kp_min = st.number_input(
+                "Kp 下限", value=float(st.session_state["bayes_kp_min"]),
+                min_value=0.001, step=0.01, format="%.3f"
             )
-            full_backtest  = result_data["backtest_data"]
-            wm_prices_stock = result_data["warmup_data"][ticker1].values
-            wm_prices_bond  = result_data["warmup_data"][ticker2].values
-            prices_stock_bt = full_backtest[ticker1].values
-            prices_bond_bt  = full_backtest[ticker2].values
-            dates_bt        = full_backtest.index.tolist()
-            rets_stock_bt   = np.diff(prices_stock_bt) / prices_stock_bt[:-1]
-            rets_bond_bt    = np.diff(prices_bond_bt)  / prices_bond_bt[:-1]
-            prices_stock_bt = prices_stock_bt[1:]
-            prices_bond_bt  = prices_bond_bt[1:]
-            dates_bt        = dates_bt[1:]
+            bayes_kd_min = st.number_input(
+                "Kd 下限", value=float(st.session_state["bayes_kd_min"]),
+                min_value=0.001, step=0.01, format="%.3f"
+            )
+        with col2:
+            bayes_kp_max = st.number_input(
+                "Kp 上限", value=float(st.session_state["bayes_kp_max"]),
+                min_value=0.1, step=0.5, format="%.1f"
+            )
+            bayes_kd_max = st.number_input(
+                "Kd 上限", value=float(st.session_state["bayes_kd_max"]),
+                min_value=0.1, step=0.5, format="%.1f"
+            )
 
-        n_trials_int = int(bayes_n_trials)
-        progress_bar = st.sidebar.progress(0)
-        status_text = st.sidebar.empty()
-        status_text.text(f"貝氏最佳化進度：0/{n_trials_int}")
+        col1, col2 = st.columns(2)
+        with col1:
+            bayes_q_min = st.number_input(
+                "Q 下限", value=float(st.session_state["bayes_q_min"]),
+                min_value=0.000001, format="%.5f"
+            )
+        with col2:
+            bayes_q_max = st.number_input(
+                "Q 上限", value=float(st.session_state["bayes_q_max"]),
+                min_value=0.00001, format="%.4f"
+            )
 
-        t0 = time.time()
-        from core.optimizer import run_bayesian_opt
-        bayes_result = run_bayesian_opt(
-            rets_stock_bt, rets_bond_bt,
-            prices_stock_bt, prices_bond_bt, dates_bt,
-            target_w=target_w,
-            fee_rate=fee_rate,
-            deadband_values=np.linspace(0.005, 0.10, 15).tolist(),
-            kf_r=kf_r,
-            warmup=warmup,
-            warmup_prices_stock=wm_prices_stock,
-            warmup_prices_bond=wm_prices_bond,
-            ref_rmse=norm_ref_rmse,
-            ref_cost=norm_ref_cost,
-            kp_min=bayes_kp_min, kp_max=bayes_kp_max,
-            kd_min=bayes_kd_min, kd_max=bayes_kd_max,
-            q_min=bayes_q_min,   q_max=bayes_q_max,
-            n_trials=n_trials_int,
-            n_jobs=n_jobs,
-            d_clip=d_clip,
-            output_clip=output_clip,
-            progress_bar=progress_bar,
-            status_text=status_text,
+        bayes_n_trials = st.number_input(
+            "試驗次數 (trials)", value=int(st.session_state["bayes_n_trials"]),
+            min_value=10, step=10
         )
-        elapsed = time.time() - t0
 
-        progress_bar.progress(1.0)
-        status_text.text(f"完成！{n_trials_int} 次試驗，耗時 {elapsed:.1f} 秒")
-
-        cache_path = Path("data/cache/bayesian_opt_results.json")
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(cache_path, "w", encoding="utf-8") as f:
-            json.dump({
-                "kp": bayes_result["kp"],
-                "kd": bayes_result["kd"],
-                "q":  bayes_result["q"],
-                "hypervolume": bayes_result["hypervolume"],
-                "hypervolume_x10000": bayes_result["hypervolume_x10000"],
-                "n_trials": bayes_result["n_trials"],
-            }, f, ensure_ascii=False, indent=2)
-
-        st.sidebar.success(
-            f"貝氏最佳化完成！耗時 {elapsed:.1f} 秒\n"
-            f"最佳：Kp={bayes_result['kp']:.3f}, "
-            f"Kd={bayes_result['kd']:.3f}, "
-            f"Q={bayes_result['q']:.6f}\n"
-            f"HV={bayes_result['hypervolume']:.6f}"
-            f"（×10000 = {bayes_result['hypervolume_x10000']:.4f}）"
+        submitted_bayes = st.form_submit_button(
+            "▶ 執行貝氏最佳化（約 3-8 分鐘）",
+            type="primary", use_container_width=True
         )
+
+        if submitted_bayes:
+            # 1. 套用貝氏參數到 session_state
+            st.session_state.update({
+                "bayes_kp_min": bayes_kp_min,
+                "bayes_kp_max": bayes_kp_max,
+                "bayes_kd_min": bayes_kd_min,
+                "bayes_kd_max": bayes_kd_max,
+                "bayes_q_min":  bayes_q_min,
+                "bayes_q_max":  bayes_q_max,
+                "bayes_n_trials": bayes_n_trials,
+            })
+            # 2. 從 session_state 讀所有參數
+            s = st.session_state
+            n_trials_int = int(s["bayes_n_trials"])
+
+            # 3. 抓資料
+            with st.spinner("載入資料..."):
+                result_data = load_data(
+                    tickers=[s["ticker1"], s["ticker2"]],
+                    start_date=str(s["start_date"]),
+                    end_date=str(s["end_date"]),
+                    warmup_days=int(s["warmup"]),
+                )
+                full_backtest   = result_data["backtest_data"]
+                wm_prices_stock = result_data["warmup_data"][s["ticker1"]].values
+                wm_prices_bond  = result_data["warmup_data"][s["ticker2"]].values
+                prices_stock_bt = full_backtest[s["ticker1"]].values
+                prices_bond_bt  = full_backtest[s["ticker2"]].values
+                dates_bt        = full_backtest.index.tolist()
+                rets_stock_bt   = np.diff(prices_stock_bt) / prices_stock_bt[:-1]
+                rets_bond_bt    = np.diff(prices_bond_bt)  / prices_bond_bt[:-1]
+                prices_stock_bt = prices_stock_bt[1:]
+                prices_bond_bt  = prices_bond_bt[1:]
+                dates_bt        = dates_bt[1:]
+
+            # 4. 跑貝氏最佳化
+            progress_bar = st.sidebar.progress(0)
+            status_text  = st.sidebar.empty()
+            status_text.text(f"貝氏最佳化進度：0/{n_trials_int}")
+
+            t0 = time.time()
+            from core.optimizer import run_bayesian_opt
+            bayes_result = run_bayesian_opt(
+                rets_stock_bt, rets_bond_bt,
+                prices_stock_bt, prices_bond_bt, dates_bt,
+                target_w=s["target_w"],
+                fee_rate=s["fee_rate"],
+                deadband_values=np.linspace(0.005, 0.10, 15).tolist(),
+                kf_r=s["kf_r"],
+                warmup=int(s["warmup"]),
+                warmup_prices_stock=wm_prices_stock,
+                warmup_prices_bond=wm_prices_bond,
+                ref_rmse=s["norm_ref_rmse_pct"] / 100,
+                ref_cost=s["norm_ref_cost_pct"] / 100,
+                kp_min=s["bayes_kp_min"], kp_max=s["bayes_kp_max"],
+                kd_min=s["bayes_kd_min"], kd_max=s["bayes_kd_max"],
+                q_min=s["bayes_q_min"],   q_max=s["bayes_q_max"],
+                n_trials=n_trials_int,
+                n_jobs=n_jobs,
+                d_clip=s["d_clip"],
+                output_clip=s["output_clip"],
+                progress_bar=progress_bar,
+                status_text=status_text,
+            )
+            elapsed = time.time() - t0
+
+            # 5. 存 JSON
+            progress_bar.progress(1.0)
+            status_text.text(f"完成！{n_trials_int} 次試驗，耗時 {elapsed:.1f} 秒")
+
+            cache_path = Path("data/cache/bayesian_opt_results.json")
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(cache_path, "w", encoding="utf-8") as f:
+                json.dump({
+                    "kp": bayes_result["kp"],
+                    "kd": bayes_result["kd"],
+                    "q":  bayes_result["q"],
+                    "hypervolume": bayes_result["hypervolume"],
+                    "hypervolume_x10000": bayes_result["hypervolume_x10000"],
+                    "n_trials": bayes_result["n_trials"],
+                }, f, ensure_ascii=False, indent=2)
+
+            st.sidebar.success(
+                f"貝氏最佳化完成！耗時 {elapsed:.1f} 秒\n"
+                f"最佳：Kp={bayes_result['kp']:.3f}, "
+                f"Kd={bayes_result['kd']:.3f}, "
+                f"Q={bayes_result['q']:.6f}\n"
+                f"HV={bayes_result['hypervolume']:.6f}"
+                f"（×10000 = {bayes_result['hypervolume_x10000']:.4f}）"
+            )
 
     # =========================================================================
-    # 區塊 6：快取管理
+    # 區塊 5：快取管理
     # =========================================================================
     with st.sidebar.expander("🗂️ 快取管理", expanded=False):
         st.write("**股票價格快取（CSV）**")
@@ -356,34 +408,29 @@ def render_sidebar() -> dict:
                     st.warning("已刪除，需重新執行貝氏最佳化")
 
     # =========================================================================
-    # 回傳參數
+    # 回傳參數（全部從 session_state 讀取）
     # =========================================================================
+    s = st.session_state
     return {
-        "ticker1": ticker1,
-        "ticker2": ticker2,
-        "target_w": target_w,
-        "start_date": start_date,
-        "end_date": end_date,
-        "fee_rate": fee_rate,
-        "kp": 0.5,
-        "kd": 0.5,
-        "kf_q": 0.001,
-        "kf_r": kf_r,
-        "deadband": 0.02,
-        "warmup": warmup,
+        "ticker1":    s["ticker1"],
+        "ticker2":    s["ticker2"],
+        "target_w":   s["target_w"],
+        "start_date": s["start_date"],
+        "end_date":   s["end_date"],
+        "fee_rate":   s["fee_rate"],
+        "kf_r":       s["kf_r"],
+        "warmup":     s["warmup"],
+        "d_clip":     s["d_clip"],
+        "output_clip": s["output_clip"],
+        "norm_ref_rmse": s["norm_ref_rmse_pct"] / 100,
+        "norm_ref_cost": s["norm_ref_cost_pct"] / 100,
+        "bayes_kp_min":  s["bayes_kp_min"], "bayes_kp_max": s["bayes_kp_max"],
+        "bayes_kd_min":  s["bayes_kd_min"], "bayes_kd_max": s["bayes_kd_max"],
+        "bayes_q_min":   s["bayes_q_min"],  "bayes_q_max":  s["bayes_q_max"],
+        "bayes_n_trials": s["bayes_n_trials"],
+        "kp": 0.5, "kd": 0.5, "kf_q": 0.001, "deadband": 0.02,
         "deadband_values": np.linspace(0.005, 0.10, 15).tolist(),
         "n_jobs": n_jobs,
-        "d_clip": d_clip,
-        "output_clip": output_clip,
-        "bayes_kp_min": bayes_kp_min,
-        "bayes_kp_max": bayes_kp_max,
-        "bayes_kd_min": bayes_kd_min,
-        "bayes_kd_max": bayes_kd_max,
-        "bayes_q_min":  bayes_q_min,
-        "bayes_q_max":  bayes_q_max,
-        "bayes_n_trials": bayes_n_trials,
-        "norm_ref_rmse": norm_ref_rmse,
-        "norm_ref_cost": norm_ref_cost,
     }
 
 
@@ -660,117 +707,125 @@ def render_tab_heatmap(params: dict, data: pd.DataFrame,
     """渲染參數空間熱力圖分頁"""
     st.header("Heatmap - 參數空間")
 
-    # ── Grid Search 參數設定 ──
-    with st.expander("⚙️ Grid Search 參數設定", expanded=False):
+    # ── Grid Search 參數設定（form，按下 submit 才執行）──
+    with st.form("form_grid_search"):
+        st.markdown("⚙️ **Grid Search 參數設定**")
         col1, col2, col3 = st.columns(3)
         with col1:
-            gs_kp_min = st.number_input("Kp 最小值", value=0.1, step=0.1, format="%.1f", key="gs_kp_min")
+            gs_kp_min = st.number_input("Kp 最小值", value=0.1, step=0.1, format="%.1f")
         with col2:
-            gs_kp_max = st.number_input("Kp 最大值", value=1.0, step=0.1, format="%.1f", key="gs_kp_max")
+            gs_kp_max = st.number_input("Kp 最大值", value=1.0, step=0.1, format="%.1f")
         with col3:
-            gs_kp_points = st.number_input("Kp 點數", value=10, min_value=3, step=1, key="gs_kp_points")
-
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            gs_kd_min = st.number_input("Kd 最小值", value=0.1, step=0.1, format="%.1f", key="gs_kd_min")
-        with col2:
-            gs_kd_max = st.number_input("Kd 最大值", value=1.0, step=0.1, format="%.1f", key="gs_kd_max")
-        with col3:
-            gs_kd_points = st.number_input("Kd 點數", value=10, min_value=3, step=1, key="gs_kd_points")
+            gs_kp_points = st.number_input("Kp 點數", value=10, min_value=3, step=1)
 
         col1, col2, col3 = st.columns(3)
         with col1:
-            gs_q_min = st.number_input("Q 最小值", value=0.00001, min_value=0.000001, format="%.5f", key="gs_q_min")
+            gs_kd_min = st.number_input("Kd 最小值", value=0.1, step=0.1, format="%.1f")
         with col2:
-            gs_q_max = st.number_input("Q 最大值", value=0.1, min_value=0.00001, format="%.4f", key="gs_q_max")
+            gs_kd_max = st.number_input("Kd 最大值", value=1.0, step=0.1, format="%.1f")
         with col3:
-            gs_q_points = st.number_input("Q 點數", value=5, min_value=2, step=1, key="gs_q_points")
-        gs_q_values = np.logspace(np.log10(gs_q_min), np.log10(gs_q_max), int(gs_q_points)).tolist()
+            gs_kd_points = st.number_input("Kd 點數", value=10, min_value=3, step=1)
 
         col1, col2, col3 = st.columns(3)
         with col1:
-            gs_db_min = st.number_input("Deadband 最小值", value=0.005, step=0.005, format="%.3f", key="gs_db_min")
+            gs_q_min = st.number_input("Q 最小值", value=0.00001, min_value=0.000001, format="%.5f")
         with col2:
-            gs_db_max = st.number_input("Deadband 最大值", value=0.10, step=0.005, format="%.3f", key="gs_db_max")
+            gs_q_max = st.number_input("Q 最大值", value=0.1, min_value=0.00001, format="%.4f")
         with col3:
-            gs_db_points = st.number_input("Deadband 點數", value=15, min_value=3, step=1, key="gs_db_points")
+            gs_q_points = st.number_input("Q 點數", value=5, min_value=2, step=1)
 
-        gs_kp_range  = np.linspace(gs_kp_min, gs_kp_max, int(gs_kp_points)).tolist()
-        gs_kd_range  = np.linspace(gs_kd_min, gs_kd_max, int(gs_kd_points)).tolist()
-        gs_db_values = np.linspace(gs_db_min, gs_db_max, int(gs_db_points)).tolist()
-        gs_total_tasks = len(gs_q_values) * len(gs_kp_range) * len(gs_kd_range)
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            gs_db_min = st.number_input("Deadband 最小值", value=0.005, step=0.005, format="%.3f")
+        with col2:
+            gs_db_max = st.number_input("Deadband 最大值", value=0.10, step=0.005, format="%.3f")
+        with col3:
+            gs_db_points = st.number_input("Deadband 點數", value=15, min_value=3, step=1)
 
-        n_q = len(gs_q_values)
-        st.info(
-            f"共 {gs_total_tasks} 組參數（{n_q} 個 Q 值 × {len(gs_kp_range)} Kp × {len(gs_kd_range)} Kd），"
-            f"使用 {params['n_jobs']} 核心平行運算。KF 只計算 {n_q} 次（每個 Q 值一次）。"
+        submitted_grid = st.form_submit_button(
+            "▶ 執行 Grid Search（約 2-5 分鐘）",
+            type="primary", use_container_width=True
         )
+
+    # 計算衍生範圍（供 info 顯示及執行使用）
+    gs_q_values  = np.logspace(np.log10(gs_q_min), np.log10(gs_q_max), int(gs_q_points)).tolist()
+    gs_kp_range  = np.linspace(gs_kp_min, gs_kp_max, int(gs_kp_points)).tolist()
+    gs_kd_range  = np.linspace(gs_kd_min, gs_kd_max, int(gs_kd_points)).tolist()
+    gs_db_values = np.linspace(gs_db_min, gs_db_max, int(gs_db_points)).tolist()
+    gs_total_tasks = len(gs_q_values) * len(gs_kp_range) * len(gs_kd_range)
+    n_q = len(gs_q_values)
+
+    st.info(
+        f"共 {gs_total_tasks} 組參數（{n_q} 個 Q 值 × {len(gs_kp_range)} Kp × {len(gs_kd_range)} Kd），"
+        f"使用 {params['n_jobs']} 核心平行運算。KF 只計算 {n_q} 次（每個 Q 值一次）。"
+    )
+
+    if submitted_grid:
         gs_progress_bar = st.progress(0)
         gs_status_text  = st.empty()
 
-        if st.button("▶ 執行 Grid Search（約 2-5 分鐘）", type="primary", key="btn_grid_search"):
-            with st.spinner("載入資料..."):
-                result = load_data(
-                    tickers=[params["ticker1"], params["ticker2"]],
-                    start_date=str(params["start_date"]),
-                    end_date=str(params["end_date"]),
-                    warmup_days=params["warmup"],
-                )
-                full_backtest = result["backtest_data"]
-                wm_stock = result["warmup_data"][params["ticker1"]].values
-                wm_bond  = result["warmup_data"][params["ticker2"]].values
-                ps = full_backtest[params["ticker1"]].values
-                pb = full_backtest[params["ticker2"]].values
-                dt = full_backtest.index.tolist()
-                rs = np.diff(ps) / ps[:-1]
-                rb = np.diff(pb) / pb[:-1]
-                ps, pb, dt = ps[1:], pb[1:], dt[1:]
-
-            gs_status_text.text(f"Grid Search 進度：0/{n_q} 個 Q 值")
-            t0 = time.time()
-            from core.optimizer import run_grid_search_with_progress, find_best_from_grid
-            results = run_grid_search_with_progress(
-                rs, rb, ps, pb, dt,
-                target_w=params["target_w"],
-                fee_rate=params["fee_rate"],
-                kp_range=gs_kp_range,
-                kd_range=gs_kd_range,
-                q_values=gs_q_values,
-                deadband_values=gs_db_values,
-                n_jobs=params["n_jobs"],
-                kf_r=params["kf_r"],
-                warmup=params["warmup"],
-                norm_ref_rmse=params["norm_ref_rmse"],
-                norm_ref_cost=params["norm_ref_cost"],
-                warmup_prices_stock=wm_stock,
-                warmup_prices_bond=wm_bond,
-                progress_bar=gs_progress_bar,
-                status_text=gs_status_text,
+        with st.spinner("載入資料..."):
+            result = load_data(
+                tickers=[params["ticker1"], params["ticker2"]],
+                start_date=str(params["start_date"]),
+                end_date=str(params["end_date"]),
+                warmup_days=params["warmup"],
             )
-            best = find_best_from_grid(results)
-            elapsed = time.time() - t0
-            gs_progress_bar.progress(1.0)
-            gs_status_text.text(f"完成！共 {gs_total_tasks} 組，耗時 {elapsed:.1f} 秒")
+            full_backtest = result["backtest_data"]
+            wm_stock = result["warmup_data"][params["ticker1"]].values
+            wm_bond  = result["warmup_data"][params["ticker2"]].values
+            ps = full_backtest[params["ticker1"]].values
+            pb = full_backtest[params["ticker2"]].values
+            dt = full_backtest.index.tolist()
+            rs = np.diff(ps) / ps[:-1]
+            rb = np.diff(pb) / pb[:-1]
+            ps, pb, dt = ps[1:], pb[1:], dt[1:]
 
-            cache_path = Path("data/cache/grid_search_results.json")
-            cache_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(cache_path, "w", encoding="utf-8") as f:
-                json.dump({
-                    "results": results,
-                    "best": best,
-                    "metadata": {
-                        "q_values":        gs_q_values,
-                        "kp_range":        gs_kp_range,
-                        "kd_range":        gs_kd_range,
-                        "deadband_values": gs_db_values,
-                    }
-                }, f, ensure_ascii=False, indent=2)
-            load_grid_cache.clear()
-            st.success(
-                f"Grid Search 完成！共 {len(results)} 組，耗時 {elapsed:.1f} 秒\n"
-                f"最佳：Kp={best['kp']:.2f}, Kd={best['kd']:.2f}, "
-                f"Q={best['q']:.5f}, HV={best['hypervolume']*10000:.4f}"
-            )
+        gs_status_text.text(f"Grid Search 進度：0/{n_q} 個 Q 值")
+        t0 = time.time()
+        from core.optimizer import run_grid_search_with_progress, find_best_from_grid
+        results = run_grid_search_with_progress(
+            rs, rb, ps, pb, dt,
+            target_w=params["target_w"],
+            fee_rate=params["fee_rate"],
+            kp_range=gs_kp_range,
+            kd_range=gs_kd_range,
+            q_values=gs_q_values,
+            deadband_values=gs_db_values,
+            n_jobs=params["n_jobs"],
+            kf_r=params["kf_r"],
+            warmup=params["warmup"],
+            norm_ref_rmse=params["norm_ref_rmse"],
+            norm_ref_cost=params["norm_ref_cost"],
+            warmup_prices_stock=wm_stock,
+            warmup_prices_bond=wm_bond,
+            progress_bar=gs_progress_bar,
+            status_text=gs_status_text,
+        )
+        best = find_best_from_grid(results)
+        elapsed = time.time() - t0
+        gs_progress_bar.progress(1.0)
+        gs_status_text.text(f"完成！共 {gs_total_tasks} 組，耗時 {elapsed:.1f} 秒")
+
+        cache_path = Path("data/cache/grid_search_results.json")
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(cache_path, "w", encoding="utf-8") as f:
+            json.dump({
+                "results": results,
+                "best": best,
+                "metadata": {
+                    "q_values":        gs_q_values,
+                    "kp_range":        gs_kp_range,
+                    "kd_range":        gs_kd_range,
+                    "deadband_values": gs_db_values,
+                }
+            }, f, ensure_ascii=False, indent=2)
+        load_grid_cache.clear()
+        st.success(
+            f"Grid Search 完成！共 {len(results)} 組，耗時 {elapsed:.1f} 秒\n"
+            f"最佳：Kp={best['kp']:.2f}, Kd={best['kd']:.2f}, "
+            f"Q={best['q']:.5f}, HV={best['hypervolume']*10000:.4f}"
+        )
 
     grid_cache = load_grid_cache()
 
