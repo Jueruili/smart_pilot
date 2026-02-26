@@ -138,6 +138,7 @@ def render_sidebar() -> dict:
         "bayes_kd_min": 0.01, "bayes_kd_max": 5.0,
         "bayes_q_min": 0.00001, "bayes_q_max": 1.0,
         "bayes_n_trials": 50,
+        "bayes_db_min": 0.005, "bayes_db_max": 0.10, "bayes_db_points": 15,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -288,6 +289,24 @@ def render_sidebar() -> dict:
                 min_value=0.00001, format="%.4f"
             )
 
+        st.markdown("**Deadband 掃描範圍**")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            bayes_db_min = st.number_input(
+                "Deadband 最小值", value=float(st.session_state.get("bayes_db_min", 0.005)),
+                min_value=0.001, step=0.005, format="%.3f", key="bayes_db_min_input"
+            )
+        with col2:
+            bayes_db_max = st.number_input(
+                "Deadband 最大值", value=float(st.session_state.get("bayes_db_max", 0.10)),
+                min_value=0.01, step=0.01, format="%.3f", key="bayes_db_max_input"
+            )
+        with col3:
+            bayes_db_points = st.number_input(
+                "Deadband 點數", value=int(st.session_state.get("bayes_db_points", 15)),
+                min_value=5, step=5, key="bayes_db_points_input"
+            )
+
         bayes_n_trials = st.number_input(
             "試驗次數 (trials)", value=int(st.session_state["bayes_n_trials"]),
             min_value=10, step=10
@@ -308,6 +327,9 @@ def render_sidebar() -> dict:
                 "bayes_q_min":  bayes_q_min,
                 "bayes_q_max":  bayes_q_max,
                 "bayes_n_trials": bayes_n_trials,
+                "bayes_db_min": bayes_db_min,
+                "bayes_db_max": bayes_db_max,
+                "bayes_db_points": bayes_db_points,
             })
             # 2. 從 session_state 讀所有參數
             s = st.session_state
@@ -371,7 +393,9 @@ def render_sidebar() -> dict:
                     prices_stock_bt, prices_bond_bt, dates_bt,
                     target_w=s["target_w"],
                     fee_rate=s["fee_rate"],
-                    deadband_values=np.linspace(0.005, 0.10, 15).tolist(),
+                    deadband_values=np.linspace(
+                        s["bayes_db_min"], s["bayes_db_max"], int(s["bayes_db_points"])
+                    ).tolist(),
                     kf_r=s["kf_r"],
                     warmup=int(s["warmup"]),
                     warmup_prices_stock=wm_prices_stock,
@@ -501,8 +525,15 @@ def render_sidebar() -> dict:
         "bayes_kd_min":  s["bayes_kd_min"], "bayes_kd_max": s["bayes_kd_max"],
         "bayes_q_min":   s["bayes_q_min"],  "bayes_q_max":  s["bayes_q_max"],
         "bayes_n_trials": s["bayes_n_trials"],
+        "bayes_db_min":    s.get("bayes_db_min", 0.005),
+        "bayes_db_max":    s.get("bayes_db_max", 0.10),
+        "bayes_db_points": int(s.get("bayes_db_points", 15)),
         "kp": 0.5, "kd": 0.5, "kf_q": 0.001, "deadband": 0.02,
-        "deadband_values": np.linspace(0.005, 0.10, 15).tolist(),
+        "deadband_values": np.linspace(
+            s.get("bayes_db_min", 0.005),
+            s.get("bayes_db_max", 0.10),
+            int(s.get("bayes_db_points", 15))
+        ).tolist(),
         "n_jobs": n_jobs,
     }
 
@@ -1210,11 +1241,11 @@ def render_tab_heatmap(params: dict, data: pd.DataFrame,
 # =============================================================================
 # Tab 3: Rolling Window
 # =============================================================================
-def render_tab_rolling(params: dict, data: pd.DataFrame,
-                       warmup_prices_stock: np.ndarray,
-                       warmup_prices_bond: np.ndarray):
+def render_tab_walking_forward(params: dict, data: pd.DataFrame,
+                               warmup_prices_stock: np.ndarray,
+                               warmup_prices_bond: np.ndarray):
     """Walk-Forward 滾動窗口分析"""
-    st.header("Walk-Forward Analysis - 滾動窗口分析")
+    st.header("Walk-Forward Analysis")
 
     st.markdown("""
     每一輪包含：
@@ -1250,6 +1281,20 @@ def render_tab_rolling(params: dict, data: pd.DataFrame,
             min_value=10, step=10,
             help="Walk-Forward 每一輪 IS 最佳化的試驗次數"
         )
+        st.markdown("**Deadband 掃描範圍**")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            wf_db_min = st.number_input(
+                "Deadband 最小值", value=0.005, min_value=0.001, step=0.005, format="%.3f"
+            )
+        with col2:
+            wf_db_max = st.number_input(
+                "Deadband 最大值", value=0.10, min_value=0.01, step=0.01, format="%.3f"
+            )
+        with col3:
+            wf_db_points = st.number_input(
+                "Deadband 點數", value=15, min_value=5, step=5
+            )
         submitted_wf = st.form_submit_button(
             "▶ 執行 Walk-Forward 分析", type="primary", use_container_width=True
         )
@@ -1288,6 +1333,8 @@ def render_tab_rolling(params: dict, data: pd.DataFrame,
         "norm_ref_cost": params["norm_ref_cost"],
         "is_years": int(is_years), "oos_years": int(oos_years),
         "step_years": int(step_years), "n_trials": int(wf_n_trials),
+        "wf_db_min": float(wf_db_min), "wf_db_max": float(wf_db_max),
+        "wf_db_points": int(wf_db_points),
         "kp_min": params["bayes_kp_min"], "kp_max": params["bayes_kp_max"],
         "kd_min": params["bayes_kd_min"], "kd_max": params["bayes_kd_max"],
         "q_min": params["bayes_q_min"],   "q_max": params["bayes_q_max"],
@@ -1306,6 +1353,8 @@ def render_tab_rolling(params: dict, data: pd.DataFrame,
             else:
                 rounds = None  # 強制重跑
         if rounds is None:
+            wf_progress_bar = st.progress(0)
+            wf_status_text = st.empty()
             with st.spinner("執行中，請耐心等候..."):
                 from core.walk_forward import run_walk_forward
                 wf_result = run_walk_forward(
@@ -1321,7 +1370,9 @@ def render_tab_rolling(params: dict, data: pd.DataFrame,
                     oos_years=int(oos_years),
                     step_years=int(step_years),
                     n_trials=int(wf_n_trials),
-                    deadband_values=params["deadband_values"],
+                    deadband_values=np.linspace(
+                        wf_db_min, wf_db_max, int(wf_db_points)
+                    ).tolist(),
                     norm_ref_rmse=params["norm_ref_rmse"],
                     norm_ref_cost=params["norm_ref_cost"],
                     kp_min=params["bayes_kp_min"],
@@ -1331,6 +1382,8 @@ def render_tab_rolling(params: dict, data: pd.DataFrame,
                     q_min=params["bayes_q_min"],
                     q_max=params["bayes_q_max"],
                     n_jobs=params["n_jobs"],
+                    progress_bar=wf_progress_bar,
+                    status_text=wf_status_text,
                 )
             rounds = wf_result["rounds"]
             if not rounds:
@@ -1475,39 +1528,58 @@ def render_tab_rolling(params: dict, data: pd.DataFrame,
     )
     st.plotly_chart(fig_params, use_container_width=True)
 
-    # ── 表格一：OOS 綜合績效指標比較 ──
-    st.subheader("表格一：OOS 綜合績效指標比較（所有輪次平均）")
+    # ── 表格：每個 Round 三策略詳細指標 ──
+    st.subheader("各輪次三策略詳細指標")
 
-    def collect_metrics(key):
-        rows = []
-        for r in rounds:
-            m = r[key]["metrics"]
-            rows.append({
-                "交易次數":   r[key]["trade_count"],
-                "總周轉率":   r[key]["turnover"],
-                "RMSE":      r[key]["rmse"],
-                "年化報酬率": m["ann_return"],
-                "夏普值":     m["sharpe"],
-                "最大回撤":   m["max_drawdown"],
-                "年化波動率": m["ann_wealth_vol"],
+    table_rows = []
+    for r in rounds:
+        round_label = f"Round {r['round']} OOS ({r['oos_start'].strftime('%Y/%m')}~{r['oos_end'].strftime('%Y/%m')})"
+        for strategy_key, strategy_name in [
+            ("oos_sp",  "Smart Pilot"),
+            ("oos_to",  "Threshold-only"),
+            ("oos_tat", "Time-and-threshold"),
+        ]:
+            res = r[strategy_key]
+            m = res["metrics"]
+            table_rows.append({
+                "Round":   round_label,
+                "策略":    strategy_name,
+                "交易次數": res["trade_count"],
+                "總周轉率": f"{res['turnover']:.3f}",
+                "RMSE":    f"{res['rmse']*100:.2f}%",
+                "年化報酬": f"{m['ann_return']*100:.2f}%",
+                "Sharpe":  f"{m['sharpe']:.2f}",
+                "MDD":     f"{m['max_drawdown']*100:.2f}%",
+                "年化波動": f"{m['ann_wealth_vol']*100:.2f}%",
             })
-        return pd.DataFrame(rows).mean()
 
-    avg_sp  = collect_metrics("oos_sp")
-    avg_to  = collect_metrics("oos_to")
-    avg_tat = collect_metrics("oos_tat")
+    # 平均列
+    for strategy_key, strategy_name in [
+        ("oos_sp",  "Smart Pilot"),
+        ("oos_to",  "Threshold-only"),
+        ("oos_tat", "Time-and-threshold"),
+    ]:
+        avg_trades = np.mean([r[strategy_key]["trade_count"]               for r in rounds])
+        avg_to_val = np.mean([r[strategy_key]["turnover"]                  for r in rounds])
+        avg_rmse   = np.mean([r[strategy_key]["rmse"]                      for r in rounds])
+        avg_ret    = np.mean([r[strategy_key]["metrics"]["ann_return"]      for r in rounds])
+        avg_sharpe = np.mean([r[strategy_key]["metrics"]["sharpe"]          for r in rounds])
+        avg_mdd    = np.mean([r[strategy_key]["metrics"]["max_drawdown"]    for r in rounds])
+        avg_vol    = np.mean([r[strategy_key]["metrics"]["ann_wealth_vol"]  for r in rounds])
+        table_rows.append({
+            "Round":   "**平均**",
+            "策略":    strategy_name,
+            "交易次數": f"{avg_trades:.1f}",
+            "總周轉率": f"{avg_to_val:.3f}",
+            "RMSE":    f"{avg_rmse*100:.2f}%",
+            "年化報酬": f"{avg_ret*100:.2f}%",
+            "Sharpe":  f"{avg_sharpe:.2f}",
+            "MDD":     f"{avg_mdd*100:.2f}%",
+            "年化波動": f"{avg_vol*100:.2f}%",
+        })
 
-    summary_df = pd.DataFrame({
-        "策略": ["Smart Pilot", "Threshold-only", "Time-and-threshold"],
-        "交易次數(均)":  [f"{avg_sp['交易次數']:.1f}",       f"{avg_to['交易次數']:.1f}",       f"{avg_tat['交易次數']:.1f}"],
-        "總周轉率(均)":  [f"{avg_sp['總周轉率']:.3f}",       f"{avg_to['總周轉率']:.3f}",       f"{avg_tat['總周轉率']:.3f}"],
-        "RMSE(均)":     [f"{avg_sp['RMSE']*100:.2f}%",      f"{avg_to['RMSE']*100:.2f}%",      f"{avg_tat['RMSE']*100:.2f}%"],
-        "年化報酬(均)":  [f"{avg_sp['年化報酬率']*100:.2f}%",f"{avg_to['年化報酬率']*100:.2f}%",f"{avg_tat['年化報酬率']*100:.2f}%"],
-        "Sharpe(均)":   [f"{avg_sp['夏普值']:.2f}",         f"{avg_to['夏普值']:.2f}",         f"{avg_tat['夏普值']:.2f}"],
-        "MDD(均)":      [f"{avg_sp['最大回撤']*100:.2f}%",  f"{avg_to['最大回撤']*100:.2f}%",  f"{avg_tat['最大回撤']*100:.2f}%"],
-        "年化波動率(均)":[f"{avg_sp['年化波動率']*100:.2f}%",f"{avg_to['年化波動率']*100:.2f}%",f"{avg_tat['年化波動率']*100:.2f}%"],
-    })
-    st.dataframe(summary_df, use_container_width=True, hide_index=True)
+    detail_df = pd.DataFrame(table_rows)
+    st.dataframe(detail_df, use_container_width=True, hide_index=True)
 
     # ── 表格二：過度擬合檢驗 ──
     st.subheader("表格二：過度擬合檢驗（Smart Pilot IS vs OOS）")
@@ -1773,7 +1845,7 @@ def main():
     tab1, tab2, tab3, tab4 = st.tabs([
         "Pareto Frontier",
         "Heatmap",
-        "Rolling Window",
+        "Walk-Forward",
         "Monte Carlo"
     ])
 
@@ -1784,7 +1856,7 @@ def main():
         render_tab_heatmap(params, data, warmup_prices_stock, warmup_prices_bond)
 
     with tab3:
-        render_tab_rolling(params, data, warmup_prices_stock, warmup_prices_bond)
+        render_tab_walking_forward(params, data, warmup_prices_stock, warmup_prices_bond)
 
     with tab4:
         render_tab_monte_carlo(params, data, warmup_prices_stock, warmup_prices_bond)
