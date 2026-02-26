@@ -316,6 +316,7 @@ def run_bayesian_opt(
         norm_pts = [
             {"rmse": p["rmse"] / ref_rmse, "cost": p["ann_cost"] / ref_cost}
             for p in sp_pts
+            if p["rmse"] / ref_rmse <= 1.0 and p["ann_cost"] / ref_cost <= 1.0
         ]
         hv = calc_hypervolume(norm_pts, {"rmse": 1.0, "cost": 1.0})
         return hv
@@ -358,7 +359,6 @@ def run_bayesian_opt(
         "kd": best_kd,
         "q": best_q,
         "hypervolume": best_hv,
-        "hypervolume_x10000": best_hv * 10000,
         "n_trials": n_trials,
         "pareto": final_pareto,
     }
