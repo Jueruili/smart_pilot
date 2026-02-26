@@ -88,7 +88,7 @@ smart_pilot/
 打開終端機（Windows 請用 PowerShell），輸入：
 
 ```bash
-git clone https://github.com/你的帳號/smart_pilot.git
+git clone https://github.com/Jueruili/smart_pilot.git
 ```
 **4. 到指定路徑**
 ```bash
