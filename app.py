@@ -138,6 +138,7 @@ def render_sidebar() -> dict:
         "bayes_kd_min": 0.01, "bayes_kd_max": 5.0,
         "bayes_q_min": 0.00001, "bayes_q_max": 1.0,
         "bayes_n_trials": 50,
+        "bayes_db_min": 0.005, "bayes_db_max": 0.10, "bayes_db_points": 15,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -288,6 +289,24 @@ def render_sidebar() -> dict:
                 min_value=0.00001, format="%.4f"
             )
 
+        st.markdown("**Deadband 掃描範圍**")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            bayes_db_min = st.number_input(
+                "Deadband 最小值", value=float(st.session_state.get("bayes_db_min", 0.005)),
+                min_value=0.001, step=0.005, format="%.3f", key="bayes_db_min_input"
+            )
+        with col2:
+            bayes_db_max = st.number_input(
+                "Deadband 最大值", value=float(st.session_state.get("bayes_db_max", 0.10)),
+                min_value=0.01, step=0.01, format="%.3f", key="bayes_db_max_input"
+            )
+        with col3:
+            bayes_db_points = st.number_input(
+                "Deadband 點數", value=int(st.session_state.get("bayes_db_points", 15)),
+                min_value=5, step=5, key="bayes_db_points_input"
+            )
+
         bayes_n_trials = st.number_input(
             "試驗次數 (trials)", value=int(st.session_state["bayes_n_trials"]),
             min_value=10, step=10
@@ -308,6 +327,9 @@ def render_sidebar() -> dict:
                 "bayes_q_min":  bayes_q_min,
                 "bayes_q_max":  bayes_q_max,
                 "bayes_n_trials": bayes_n_trials,
+                "bayes_db_min": bayes_db_min,
+                "bayes_db_max": bayes_db_max,
+                "bayes_db_points": bayes_db_points,
             })
             # 2. 從 session_state 讀所有參數
             s = st.session_state
@@ -371,7 +393,9 @@ def render_sidebar() -> dict:
                     prices_stock_bt, prices_bond_bt, dates_bt,
                     target_w=s["target_w"],
                     fee_rate=s["fee_rate"],
-                    deadband_values=np.linspace(0.005, 0.10, 15).tolist(),
+                    deadband_values=np.linspace(
+                        s["bayes_db_min"], s["bayes_db_max"], int(s["bayes_db_points"])
+                    ).tolist(),
                     kf_r=s["kf_r"],
                     warmup=int(s["warmup"]),
                     warmup_prices_stock=wm_prices_stock,
@@ -501,8 +525,15 @@ def render_sidebar() -> dict:
         "bayes_kd_min":  s["bayes_kd_min"], "bayes_kd_max": s["bayes_kd_max"],
         "bayes_q_min":   s["bayes_q_min"],  "bayes_q_max":  s["bayes_q_max"],
         "bayes_n_trials": s["bayes_n_trials"],
+        "bayes_db_min":    s.get("bayes_db_min", 0.005),
+        "bayes_db_max":    s.get("bayes_db_max", 0.10),
+        "bayes_db_points": int(s.get("bayes_db_points", 15)),
         "kp": 0.5, "kd": 0.5, "kf_q": 0.001, "deadband": 0.02,
-        "deadband_values": np.linspace(0.005, 0.10, 15).tolist(),
+        "deadband_values": np.linspace(
+            s.get("bayes_db_min", 0.005),
+            s.get("bayes_db_max", 0.10),
+            int(s.get("bayes_db_points", 15))
+        ).tolist(),
         "n_jobs": n_jobs,
     }
 
@@ -1221,6 +1252,20 @@ def render_tab_walking_forward(params: dict, data: pd.DataFrame,
             min_value=10, step=10,
             help="Walk-Forward 每一輪 IS 最佳化的試驗次數"
         )
+        st.markdown("**Deadband 掃描範圍**")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            wf_db_min = st.number_input(
+                "Deadband 最小值", value=0.005, min_value=0.001, step=0.005, format="%.3f"
+            )
+        with col2:
+            wf_db_max = st.number_input(
+                "Deadband 最大值", value=0.10, min_value=0.01, step=0.01, format="%.3f"
+            )
+        with col3:
+            wf_db_points = st.number_input(
+                "Deadband 點數", value=15, min_value=5, step=5
+            )
         submitted_wf = st.form_submit_button(
             "▶ 執行 Walk-Forward 分析", type="primary", use_container_width=True
         )
@@ -1259,6 +1304,8 @@ def render_tab_walking_forward(params: dict, data: pd.DataFrame,
         "norm_ref_cost": params["norm_ref_cost"],
         "is_years": int(is_years), "oos_years": int(oos_years),
         "step_years": int(step_years), "n_trials": int(wf_n_trials),
+        "wf_db_min": float(wf_db_min), "wf_db_max": float(wf_db_max),
+        "wf_db_points": int(wf_db_points),
         "kp_min": params["bayes_kp_min"], "kp_max": params["bayes_kp_max"],
         "kd_min": params["bayes_kd_min"], "kd_max": params["bayes_kd_max"],
         "q_min": params["bayes_q_min"],   "q_max": params["bayes_q_max"],
@@ -1277,6 +1324,8 @@ def render_tab_walking_forward(params: dict, data: pd.DataFrame,
             else:
                 rounds = None  # 強制重跑
         if rounds is None:
+            wf_progress_bar = st.progress(0)
+            wf_status_text = st.empty()
             with st.spinner("執行中，請耐心等候..."):
                 from core.walk_forward import run_walk_forward
                 wf_result = run_walk_forward(
@@ -1292,7 +1341,9 @@ def render_tab_walking_forward(params: dict, data: pd.DataFrame,
                     oos_years=int(oos_years),
                     step_years=int(step_years),
                     n_trials=int(wf_n_trials),
-                    deadband_values=params["deadband_values"],
+                    deadband_values=np.linspace(
+                        wf_db_min, wf_db_max, int(wf_db_points)
+                    ).tolist(),
                     norm_ref_rmse=params["norm_ref_rmse"],
                     norm_ref_cost=params["norm_ref_cost"],
                     kp_min=params["bayes_kp_min"],
@@ -1302,6 +1353,8 @@ def render_tab_walking_forward(params: dict, data: pd.DataFrame,
                     q_min=params["bayes_q_min"],
                     q_max=params["bayes_q_max"],
                     n_jobs=params["n_jobs"],
+                    progress_bar=wf_progress_bar,
+                    status_text=wf_status_text,
                 )
             rounds = wf_result["rounds"]
             if not rounds:
