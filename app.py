@@ -429,6 +429,86 @@ def render_sidebar() -> dict:
                         "params_hash": current_hash,
                     }, f, ensure_ascii=False, indent=2)
 
+                # ── 貝氏最佳化三策略對比 ──
+                n_years_bt = len(dates_bt) / 252.0
+                ref_rmse_bt = s["norm_ref_rmse_pct"] / 100
+                ref_cost_bt = s["norm_ref_cost_pct"] / 100
+                bayes_db_values = np.linspace(
+                    s["bayes_db_min"], s["bayes_db_max"], int(s["bayes_db_points"])
+                ).tolist()
+                bayes_tol_values = np.linspace(0.005, 0.15, len(bayes_db_values)).tolist()
+
+                pareto_bt = scan_pareto_frontier(
+                    rets_stock_bt, rets_bond_bt,
+                    prices_stock_bt, prices_bond_bt, dates_bt,
+                    target_w=s["target_w"], fee_rate=s["fee_rate"],
+                    kf_q=bayes_result["q"], kf_r=s["kf_r"],
+                    kp=bayes_result["kp"], kd=bayes_result["kd"],
+                    deadband_values=bayes_db_values,
+                    warmup=0,
+                    warmup_prices_stock=wm_prices_stock,
+                    warmup_prices_bond=wm_prices_bond,
+                    d_clip=s["d_clip"], output_clip=s["output_clip"],
+                )
+
+                def _find_best_point(pts_list):
+                    best_hv_p, best_idx_p = -1, 0
+                    for i, p in enumerate(pts_list):
+                        ann_cost_p = p["ann_cost"]
+                        if p["rmse"] / ref_rmse_bt <= 1.0 and ann_cost_p / ref_cost_bt <= 1.0:
+                            norm_pts_p = [{"rmse": p["rmse"] / ref_rmse_bt,
+                                           "cost": ann_cost_p / ref_cost_bt}]
+                        else:
+                            norm_pts_p = []
+                        hv_p = calc_hypervolume(norm_pts_p, {"rmse": 1.0, "cost": 1.0})
+                        if hv_p > best_hv_p:
+                            best_hv_p, best_idx_p = hv_p, i
+                    return best_idx_p
+
+                sp_idx = _find_best_point(pareto_bt["smart_pilot"])
+                best_db_bayes = pareto_bt["smart_pilot"][sp_idx]["deadband"]
+                best_sp = run_smart_pilot(
+                    rets_stock_bt, rets_bond_bt,
+                    prices_stock_bt, prices_bond_bt, dates_bt,
+                    target_w=s["target_w"], fee_rate=s["fee_rate"],
+                    kf_q=bayes_result["q"], kf_r=s["kf_r"],
+                    kp=bayes_result["kp"], kd=bayes_result["kd"],
+                    deadband=float(best_db_bayes),
+                    warmup=0,
+                    warmup_prices_stock=wm_prices_stock,
+                    warmup_prices_bond=wm_prices_bond,
+                    d_clip=s["d_clip"], output_clip=s["output_clip"],
+                )
+
+                to_idx = _find_best_point(pareto_bt["threshold_only"])
+                best_tol = pareto_bt["threshold_only"][to_idx]["tolerance"]
+                best_to = run_threshold_only(
+                    rets_stock_bt, rets_bond_bt, dates_bt,
+                    target_w=s["target_w"], drift_tolerance=float(best_tol),
+                    fee_rate=s["fee_rate"], warmup=0,
+                )
+
+                tat_idx = _find_best_point(pareto_bt["time_and_threshold"])
+                best_thresh = pareto_bt["time_and_threshold"][tat_idx]["threshold"]
+                best_tat = run_time_and_threshold(
+                    rets_stock_bt, rets_bond_bt, dates_bt,
+                    target_w=s["target_w"], fee_rate=s["fee_rate"],
+                    threshold=float(best_thresh), warmup=0,
+                )
+
+                st.session_state["bayes_backtest_results"] = {
+                    "sp":  best_sp,
+                    "to":  best_to,
+                    "tat": best_tat,
+                    "best_deadband": best_db_bayes,
+                    "best_tol":    best_tol,
+                    "best_thresh": best_thresh,
+                    "n_years": n_years_bt,
+                    "kp": bayes_result["kp"],
+                    "kd": bayes_result["kd"],
+                    "q":  bayes_result["q"],
+                }
+
                 st.sidebar.success(
                     f"貝氏最佳化完成！耗時 {elapsed:.1f} 秒\n"
                     f"最佳：Kp={bayes_result['kp']:.3f}, "
@@ -982,6 +1062,80 @@ def render_tab_heatmap(params: dict, data: pd.DataFrame,
                 f"Q={best['q']:.5f}, HV={best['hypervolume']:.6f}"
             )
 
+            # ── Grid Search 三策略對比（使用最佳參數回測）──
+            n_years = len(dt) / 252.0
+            db_values  = gs_db_values
+            tol_values = np.linspace(0.005, 0.15, len(gs_db_values)).tolist()
+            ref_rmse = params["norm_ref_rmse"]
+            ref_cost = params["norm_ref_cost"]
+
+            from core.benchmark import precompute_kf_signals, run_smart_pilot_presignals
+            vel_stock, vel_bond = precompute_kf_signals(
+                ps, pb,
+                kf_q=best["q"], kf_r=params["kf_r"],
+                warmup_prices_stock=wm_stock,
+                warmup_prices_bond=wm_bond,
+            )
+
+            best_hv, best_sp_result, best_deadband = -1.0, None, db_values[0]
+            for db in db_values:
+                r = run_smart_pilot_presignals(
+                    rs, rb, ps, pb, dt,
+                    vel_stock=vel_stock, vel_bond=vel_bond,
+                    target_w=params["target_w"], fee_rate=params["fee_rate"],
+                    kp=best["kp"], kd=best["kd"], deadband=float(db),
+                    d_clip=params["d_clip"], output_clip=params["output_clip"],
+                )
+                ann_cost = r["cost"] / n_years
+                if r["rmse"] / ref_rmse <= 1.0 and ann_cost / ref_cost <= 1.0:
+                    norm_pts = [{"rmse": r["rmse"] / ref_rmse, "cost": ann_cost / ref_cost}]
+                else:
+                    norm_pts = []
+                hv = calc_hypervolume(norm_pts, {"rmse": 1.0, "cost": 1.0})
+                if hv > best_hv:
+                    best_hv, best_sp_result, best_deadband = hv, r, float(db)
+
+            best_hv, best_to_result, best_to_tol = -1.0, None, tol_values[0]
+            for tol in tol_values:
+                r = run_threshold_only(
+                    rs, rb, dt,
+                    target_w=params["target_w"], drift_tolerance=float(tol),
+                    fee_rate=params["fee_rate"], warmup=0,
+                )
+                ann_cost = r["cost"] / n_years
+                if r["rmse"] / ref_rmse <= 1.0 and ann_cost / ref_cost <= 1.0:
+                    norm_pts = [{"rmse": r["rmse"] / ref_rmse, "cost": ann_cost / ref_cost}]
+                else:
+                    norm_pts = []
+                hv = calc_hypervolume(norm_pts, {"rmse": 1.0, "cost": 1.0})
+                if hv > best_hv:
+                    best_hv, best_to_result, best_to_tol = hv, r, float(tol)
+
+            best_hv, best_tat_result, best_tat_thresh = -1.0, None, tol_values[0]
+            for tol in tol_values:
+                r = run_time_and_threshold(
+                    rs, rb, dt,
+                    target_w=params["target_w"], fee_rate=params["fee_rate"],
+                    threshold=float(tol), warmup=0,
+                )
+                ann_cost = r["cost"] / n_years
+                if r["rmse"] / ref_rmse <= 1.0 and ann_cost / ref_cost <= 1.0:
+                    norm_pts = [{"rmse": r["rmse"] / ref_rmse, "cost": ann_cost / ref_cost}]
+                else:
+                    norm_pts = []
+                hv = calc_hypervolume(norm_pts, {"rmse": 1.0, "cost": 1.0})
+                if hv > best_hv:
+                    best_hv, best_tat_result, best_tat_thresh = hv, r, float(tol)
+
+            st.session_state["gs_backtest_results"] = {
+                "sp":  best_sp_result,
+                "to":  best_to_result,
+                "tat": best_tat_result,
+                "best_deadband": best_deadband,
+                "n_years": n_years,
+                "kp": best["kp"], "kd": best["kd"], "q": best["q"],
+            }
+
     grid_cache = load_grid_cache()
 
     if grid_cache is None:
@@ -1207,6 +1361,57 @@ def render_tab_heatmap(params: dict, data: pd.DataFrame,
                     )
             else:
                 st.caption("尚未執行 Grid Search，無法比較最佳結果")
+
+    # =========================================================================
+    # Helper（放函數最底部，供下方 expander 共用）
+    # =========================================================================
+    def _make_row(name, r, n_years):
+        m = r["metrics"]
+        return {
+            "策略":    name,
+            "交易次數": r["trade_count"],
+            "總周轉率": f"{r['turnover']:.3f}",
+            "RMSE":    f"{r['rmse']*100:.2f}%",
+            "年化報酬": f"{m['ann_return']*100:.2f}%",
+            "Sharpe":  f"{m['sharpe']:.2f}",
+            "MDD":     f"{m['max_drawdown']*100:.2f}%",
+            "年化波動": f"{m['ann_wealth_vol']*100:.2f}%",
+        }
+
+    st.markdown("---")
+    with st.expander("▶ Grid Search 最佳參數三策略對比", expanded=False):
+        if "gs_backtest_results" in st.session_state:
+            gs = st.session_state["gs_backtest_results"]
+            st.caption(
+                f"最佳參數：Kp={gs['kp']:.3f}, Kd={gs['kd']:.3f}, "
+                f"Q={gs['q']:.6f}, Deadband={gs['best_deadband']:.4f}"
+            )
+            rows = [
+                _make_row("Smart Pilot",        gs["sp"],  gs["n_years"]),
+                _make_row("Threshold-only",     gs["to"],  gs["n_years"]),
+                _make_row("Time-and-threshold", gs["tat"], gs["n_years"]),
+            ]
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        else:
+            st.info("請先執行 Grid Search")
+
+    with st.expander("▶ 貝氏最佳化最佳參數三策略對比", expanded=False):
+        if "bayes_backtest_results" in st.session_state:
+            br = st.session_state["bayes_backtest_results"]
+            st.caption(
+                f"最佳參數：Kp={br['kp']:.3f}, Kd={br['kd']:.3f}, Q={br['q']:.6f} | "
+                f"SP Deadband={br['best_deadband']:.4f}, "
+                f"TO Tolerance={br['best_tol']:.4f}, "
+                f"TAT Threshold={br['best_thresh']:.4f}"
+            )
+            rows = [
+                _make_row("Smart Pilot",        br["sp"],  br["n_years"]),
+                _make_row("Threshold-only",     br["to"],  br["n_years"]),
+                _make_row("Time-and-threshold", br["tat"], br["n_years"]),
+            ]
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        else:
+            st.info("請先執行貝氏最佳化")
 
 
 # =============================================================================
