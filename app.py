@@ -1181,11 +1181,11 @@ def render_tab_heatmap(params: dict, data: pd.DataFrame,
 # =============================================================================
 # Tab 3: Rolling Window
 # =============================================================================
-def render_tab_rolling(params: dict, data: pd.DataFrame,
-                       warmup_prices_stock: np.ndarray,
-                       warmup_prices_bond: np.ndarray):
+def render_tab_walking_forward(params: dict, data: pd.DataFrame,
+                               warmup_prices_stock: np.ndarray,
+                               warmup_prices_bond: np.ndarray):
     """Walk-Forward 滾動窗口分析"""
-    st.header("Walk-Forward Analysis - 滾動窗口分析")
+    st.header("Walk-Forward Analysis")
 
     st.markdown("""
     每一輪包含：
@@ -1744,7 +1744,7 @@ def main():
     tab1, tab2, tab3, tab4 = st.tabs([
         "Pareto Frontier",
         "Heatmap",
-        "Rolling Window",
+        "Walk-Forward",
         "Monte Carlo"
     ])
 
@@ -1755,7 +1755,7 @@ def main():
         render_tab_heatmap(params, data, warmup_prices_stock, warmup_prices_bond)
 
     with tab3:
-        render_tab_rolling(params, data, warmup_prices_stock, warmup_prices_bond)
+        render_tab_walking_forward(params, data, warmup_prices_stock, warmup_prices_bond)
 
     with tab4:
         render_tab_monte_carlo(params, data, warmup_prices_stock, warmup_prices_bond)
