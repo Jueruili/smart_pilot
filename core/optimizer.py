@@ -22,39 +22,43 @@ from core.benchmark import run_smart_pilot
 
 
 def _single_grid_run(
-    kp: float, kd: float, q: float,
+    kp: float, kd: float,
     rets_stock, rets_bond, prices_stock, prices_bond,
     dates, target_w, fee_rate,
-    deadband_values, norm_ref_rmse: float, norm_ref_cost: float,
-    kf_r: float = 0.005,
-    warmup: int = 30,
+    deadband_values,
+    vel_stock: np.ndarray, vel_bond: np.ndarray,
+    norm_ref_rmse: float, norm_ref_cost: float,
     d_clip: float = 0.15,
     output_clip: float = 0.2,
-    warmup_prices_stock: np.ndarray = None,
-    warmup_prices_bond: np.ndarray = None,
 ) -> dict:
     """
-    單組 (Kp, Kd, Q) 的完整評估，供平行化使用。
+    單組 (Kp, Kd) 的完整評估（使用預算好的 KF 信號），供平行化使用。
 
-    掃描多個 deadband → 得到 Smart Pilot frontier → 標準化後計算超體積。
-    超體積越大 → 這組參數在整個 deadband 範圍內表現越好。
+    直接用傳入的 vel_stock/vel_bond，掃描多個 deadband，
+    收集 Smart Pilot Pareto 點 → 標準化後計算超體積。
+    KF 信號只依賴 q，已在外層按 q 預算，此處不再重複計算。
     """
-    from core.benchmark import scan_pareto_frontier
-    from core.optimizer import calc_hypervolume
+    from core.benchmark import run_smart_pilot_presignals
 
-    pareto = scan_pareto_frontier(
-        rets_stock, rets_bond, prices_stock, prices_bond, dates,
-        target_w=target_w, fee_rate=fee_rate,
-        kf_q=q, kf_r=kf_r, kp=kp, kd=kd,
-        deadband_values=deadband_values,
-        warmup=warmup, d_clip=d_clip, output_clip=output_clip,
-        warmup_prices_stock=warmup_prices_stock,
-        warmup_prices_bond=warmup_prices_bond,
-    )
+    n_years = len(dates) / 252.0
+    sp_pts = []
+
+    for deadband in deadband_values:
+        r = run_smart_pilot_presignals(
+            rets_stock, rets_bond, prices_stock, prices_bond, dates,
+            vel_stock=vel_stock, vel_bond=vel_bond,
+            target_w=target_w, fee_rate=fee_rate,
+            kp=kp, kd=kd, deadband=float(deadband),
+            d_clip=d_clip, output_clip=output_clip,
+        )
+        sp_pts.append({
+            "rmse": r["rmse"],
+            "ann_cost": r["cost"] / n_years,
+        })
 
     norm_pts = [
         {"rmse": p["rmse"] / norm_ref_rmse, "cost": p["ann_cost"] / norm_ref_cost}
-        for p in pareto["smart_pilot"]
+        for p in sp_pts
         if p["rmse"] / norm_ref_rmse <= 1.0 and p["ann_cost"] / norm_ref_cost <= 1.0
     ]
     hv = calc_hypervolume(norm_pts, {"rmse": 1.0, "cost": 1.0})
@@ -62,10 +66,10 @@ def _single_grid_run(
     return {
         "kp": kp,
         "kd": kd,
-        "q": q,
+        # "q" is injected by the outer loop after Parallel returns
         "hypervolume": hv,
-        "best_rmse": min(p["rmse"] for p in pareto["smart_pilot"]),
-        "best_cost": min(p["cost"] for p in pareto["smart_pilot"]),
+        "best_rmse": min(p["rmse"]      for p in sp_pts) if sp_pts else 0.0,
+        "best_cost": min(p["ann_cost"]  for p in sp_pts) if sp_pts else 0.0,
     }
 
 
@@ -92,8 +96,10 @@ def run_grid_search(
     warmup_prices_bond: np.ndarray = None,
 ) -> List[dict]:
     """
-    Grid Search：掃描所有 (Kp, Kd, Q) 組合，每組計算標準化超體積。
-    使用 joblib 平行化加速。
+    Grid Search（KF 信號預算版）：掃描所有 (Kp, Kd, Q) 組合，每組計算標準化超體積。
+
+    外層對每個 q 值預算一次 KF 信號，內層平行化 kp×kd 組合。
+    KF 計算次數從 n_kp × n_kd × n_q 降至 n_q。
 
     Args:
         kp_range: Kp 網格，預設 10 個點 [0.1 ~ 1.0]
@@ -106,6 +112,8 @@ def run_grid_search(
         List of dict，每個 dict 包含：
         {"kp", "kd", "q", "hypervolume", "best_rmse", "best_cost"}
     """
+    from core.benchmark import precompute_kf_signals
+
     if kp_range is None:
         kp_range = np.linspace(0.1, 1.0, 10).tolist()
     if kd_range is None:
@@ -115,26 +123,36 @@ def run_grid_search(
     if deadband_values is None:
         deadband_values = np.linspace(0.005, 0.10, 15).tolist()
 
-    tasks = [
-        (kp, kd, q)
-        for q in q_values
-        for kp in kp_range
-        for kd in kd_range
-    ]
+    kp_kd_tasks = [(kp, kd) for kp in kp_range for kd in kd_range]
+    all_results = []
 
-    results = Parallel(n_jobs=n_jobs)(
-        delayed(_single_grid_run)(
-            kp, kd, q,
-            rets_stock, rets_bond, prices_stock, prices_bond,
-            dates, target_w, fee_rate,
-            deadband_values, norm_ref_rmse, norm_ref_cost,
-            kf_r, warmup, d_clip, output_clip,
-            warmup_prices_stock, warmup_prices_bond,
+    for q in q_values:
+        # 每個 q 只預算一次 KF 信號
+        vel_stock, vel_bond = precompute_kf_signals(
+            prices_stock, prices_bond,
+            kf_q=q, kf_r=kf_r,
+            warmup_prices_stock=warmup_prices_stock,
+            warmup_prices_bond=warmup_prices_bond,
         )
-        for kp, kd, q in tasks
-    )
 
-    return results
+        q_results = Parallel(n_jobs=n_jobs)(
+            delayed(_single_grid_run)(
+                kp, kd,
+                rets_stock, rets_bond, prices_stock, prices_bond,
+                dates, target_w, fee_rate,
+                deadband_values,
+                vel_stock, vel_bond,
+                norm_ref_rmse, norm_ref_cost,
+                d_clip, output_clip,
+            )
+            for kp, kd in kp_kd_tasks
+        )
+
+        for r in q_results:
+            r["q"] = q
+        all_results.extend(q_results)
+
+    return all_results
 
 
 def find_best_from_grid(grid_results: List[dict]) -> dict:
@@ -171,13 +189,17 @@ def run_grid_search_with_progress(
     warmup_prices_bond: np.ndarray = None,
     progress_bar=None,
     status_text=None,
-    total_tasks: int = None,
 ) -> List[dict]:
     """
-    帶進度條的 Grid Search。
-    由於 joblib 平行化不支援直接回呼 Streamlit，
-    改用批次執行（每批 n_jobs 個任務），每批完成後更新進度。
+    帶進度條的 Grid Search（KF 信號預算版）。
+
+    外層對每個 q 值預算一次 KF 信號（只計算一次），
+    內層平行化所有 kp×kd 組合。進度條以 q 值為單位更新。
+
+    KF 計算次數：改前 n_kp×n_kd×n_q，改後只需 n_q 次。
     """
+    from core.benchmark import precompute_kf_signals
+
     if kp_range is None:
         kp_range = np.linspace(0.1, 1.0, 10).tolist()
     if kd_range is None:
@@ -187,45 +209,45 @@ def run_grid_search_with_progress(
     if deadband_values is None:
         deadband_values = np.linspace(0.005, 0.10, 15).tolist()
 
-    tasks = [
-        (kp, kd, q)
-        for q in q_values
-        for kp in kp_range
-        for kd in kd_range
-    ]
-
-    if total_tasks is None:
-        total_tasks = len(tasks)
-
-    # 批次大小：每批至少 1，最多 n_jobs * 2（讓進度更新頻繁）
-    actual_n_jobs = n_jobs if n_jobs > 0 else (os.cpu_count() or 1)
-    batch_size = max(1, actual_n_jobs * 2)
-
+    kp_kd_tasks = [(kp, kd) for kp in kp_range for kd in kd_range]
+    n_q = len(q_values)
     all_results = []
-    completed = 0
 
-    for batch_start in range(0, len(tasks), batch_size):
-        batch = tasks[batch_start: batch_start + batch_size]
+    for q_idx, q in enumerate(q_values):
+        # 每個 q 只預算一次 KF 信號
+        vel_stock, vel_bond = precompute_kf_signals(
+            prices_stock, prices_bond,
+            kf_q=q, kf_r=kf_r,
+            warmup_prices_stock=warmup_prices_stock,
+            warmup_prices_bond=warmup_prices_bond,
+        )
 
-        batch_results = Parallel(n_jobs=n_jobs)(
+        # 平行化所有 kp×kd 組合
+        q_results = Parallel(n_jobs=n_jobs)(
             delayed(_single_grid_run)(
-                kp, kd, q,
+                kp, kd,
                 rets_stock, rets_bond, prices_stock, prices_bond,
                 dates, target_w, fee_rate,
-                deadband_values, norm_ref_rmse, norm_ref_cost,
-                kf_r, warmup, d_clip, output_clip,
-                warmup_prices_stock, warmup_prices_bond,
+                deadband_values,
+                vel_stock, vel_bond,
+                norm_ref_rmse, norm_ref_cost,
+                d_clip, output_clip,
             )
-            for kp, kd, q in batch
+            for kp, kd in kp_kd_tasks
         )
-        all_results.extend(batch_results)
-        completed += len(batch)
 
-        # 更新進度
+        for r in q_results:
+            r["q"] = q
+        all_results.extend(q_results)
+
+        # 每個 q 跑完後更新進度
         if progress_bar is not None:
-            progress_bar.progress(min(completed / total_tasks, 1.0))
+            progress_bar.progress((q_idx + 1) / n_q)
         if status_text is not None:
-            status_text.text(f"Grid Search 進度：{completed}/{total_tasks}")
+            status_text.text(
+                f"Grid Search 進度：{q_idx + 1}/{n_q} 個 Q 值完成"
+                f"（Q={q:.5f}，共 {len(kp_kd_tasks)} 組 Kp×Kd）"
+            )
 
     return all_results
 
