@@ -521,13 +521,41 @@ def render_tab_pareto(params: dict, data: pd.DataFrame,
     越靠左下角的策略越好（低誤差、低成本）。
     """)
 
+
+    # ── Pareto 參數設定（form）──
+    with st.form("form_pareto_params"):
+        st.markdown("⚙️ **Pareto 掃描參數設定**")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            pareto_kp = st.number_input("Kp", value=0.5, min_value=0.01, step=0.1, format="%.2f")
+        with col2:
+            pareto_kd = st.number_input("Kd", value=0.5, min_value=0.01, step=0.1, format="%.2f")
+        with col3:
+            pareto_q = st.number_input("Q", value=0.001, min_value=0.000001, format="%.5f")
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            pareto_db_min = st.number_input("Deadband 最小值", value=0.005, min_value=0.001, step=0.005, format="%.3f")
+        with col2:
+            pareto_db_max = st.number_input("Deadband 最大值", value=0.10, min_value=0.01, step=0.01, format="%.3f")
+        with col3:
+            pareto_db_points = st.number_input("Deadband 點數", value=30, min_value=5, step=5)
+        
+        st.form_submit_button("更改 Pareto 參數", use_container_width=True)
+
+    pareto_db_values = np.linspace(pareto_db_min, pareto_db_max, int(pareto_db_points)).tolist()
     # ── Hash 比對 ──
     pareto_hash_params = {
         "ticker1": params["ticker1"], "ticker2": params["ticker2"],
         "start_date": str(params["start_date"]), "end_date": str(params["end_date"]),
         "target_w": params["target_w"], "fee_rate": params["fee_rate"],
         "kf_r": params["kf_r"], "warmup": params["warmup"],
-        "kf_q": params["kf_q"], "kp": params["kp"], "kd": params["kd"],
+        "kf_q": pareto_q,
+        "kp": pareto_kp,
+        "kd": pareto_kd,
+        "db_min": pareto_db_min,
+        "db_max": pareto_db_max,
+        "db_points": int(pareto_db_points),
         "norm_ref_rmse": params["norm_ref_rmse"],
         "norm_ref_cost": params["norm_ref_cost"],
     }
@@ -563,11 +591,11 @@ def render_tab_pareto(params: dict, data: pd.DataFrame,
                     rets_stock, rets_bond, prices_stock, prices_bond, dates,
                     target_w=params["target_w"],
                     fee_rate=params["fee_rate"],
-                    kf_q=params["kf_q"],
+                    kf_q=pareto_q,
                     kf_r=params["kf_r"],
-                    kp=params["kp"],
-                    kd=params["kd"],
-                    n_points=30,
+                    kp=pareto_kp,
+                    kd=pareto_kd,
+                    deadband_values=pareto_db_values,
                     warmup=params["warmup"],
                     warmup_prices_stock=warmup_prices_stock,
                     warmup_prices_bond=warmup_prices_bond,
