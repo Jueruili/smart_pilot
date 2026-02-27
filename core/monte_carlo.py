@@ -1,5 +1,5 @@
 """
-Walk-Forward Monte Carlo 驗證模組
+Monte Carlo 模擬模組
 
 提供兩個函式：
 - generate_block_bootstrap_matrix: 矩陣化 Block Bootstrap 路徑生成
