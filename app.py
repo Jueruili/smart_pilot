@@ -542,16 +542,18 @@ def render_sidebar() -> dict:
             st.write("無 CSV 快取")
 
         st.write("**計算結果快取（JSON）**")
-        grid_path  = Path("data/cache/grid_search_results.json")
-        bayes_path = Path("data/cache/bayesian_opt_results.json")
-        wf_path    = Path("data/cache/walk_forward_results.json")
+        grid_path   = Path("data/cache/grid_search_results.json")
+        bayes_path  = Path("data/cache/bayesian_opt_results.json")
+        wf_path     = Path("data/cache/walk_forward_results.json")
         pareto_path = Path("data/cache/pareto_results.json")
+        mc_path     = Path("data/cache/mc_results.json")
 
         for label, path in [
             ("grid_search_results.json",    grid_path),
             ("bayesian_opt_results.json",   bayes_path),
             ("walk_forward_results.json",   wf_path),
             ("pareto_results.json",         pareto_path),
+            ("mc_results.json",             mc_path),
         ]:
             if path.exists():
                 size_kb = path.stat().st_size // 1024
@@ -570,6 +572,10 @@ def render_sidebar() -> dict:
                 if wf_path.exists():
                     wf_path.unlink()
                     st.warning("已刪除，需重新執行 Walk-Forward")
+            if st.button("刪除 MC 快取"):
+                if mc_path.exists():
+                    mc_path.unlink()
+                    st.warning("已刪除，需重新執行 Walk-Forward MC")
         with col2:
             if st.button("刪除貝氏最佳化"):
                 if bayes_path.exists():
@@ -1788,196 +1794,204 @@ def render_tab_walking_forward(params: dict, data: pd.DataFrame,
 # =============================================================================
 def render_tab_monte_carlo(params: dict, data: pd.DataFrame,
                            warmup_prices_stock: np.ndarray, warmup_prices_bond: np.ndarray):
-    """渲染蒙地卡羅模擬分頁"""
-    st.header("Monte Carlo Simulation")
-
+    st.header("Walk-Forward MC - 矩陣化蒙地卡羅模擬")
     st.markdown("""
-    使用 Bootstrap 方法隨機重組歷史報酬率，模擬多次投資路徑，
-    評估策略在不同市場情境下的表現分布。
+    以 Walk-Forward 各窗口的**平均最佳參數 (Kp, Kd, Q)**，
+    對未來期間用區塊重抽樣（Block Bootstrap）產生虛擬路徑，
+    評估三策略的績效分布與 Smart Pilot 的相對優勢。
     """)
-
-    # 模擬設定
-    col1, col2 = st.columns(2)
-    with col1:
-        n_simulations = st.slider(
-            "模擬次數",
-            min_value=1000,
-            max_value=50000,
-            value=10000,
-            step=1000
-        )
-    with col2:
-        random_seed = st.number_input(
-            "隨機種子",
-            min_value=0,
-            max_value=9999,
-            value=42,
-            step=1
-        )
-
-    # 準備資料
-    prices_stock = data[params["ticker1"]].values
-    prices_bond = data[params["ticker2"]].values
-    dates = data.index.tolist()
-    n_days = len(dates)
-
-    rets_stock = np.zeros(n_days)
-    rets_stock[1:] = np.diff(prices_stock) / prices_stock[:-1]
-    rets_bond = np.zeros(n_days)
-    rets_bond[1:] = np.diff(prices_bond) / prices_bond[:-1]
-
-    warmup = params["warmup"]
-
-    if st.button("執行蒙地卡羅模擬", type="primary"):
-        with st.spinner(f"執行 {n_simulations} 次模擬..."):
-            np.random.seed(random_seed)
-
-            # Bootstrap 模擬
-            final_returns = []
-
-            for _ in range(n_simulations):
-                # 隨機重組報酬率
-                indices = np.random.choice(
-                    np.arange(warmup, n_days),
-                    size=n_days - warmup,
-                    replace=True
+    # ── 前置檢查：Walk-Forward 快取 ──
+    wf_path = Path("data/cache/walk_forward_results.json")
+    if not wf_path.exists():
+        st.warning("請先在 Walk-Forward 分頁執行分析，本分頁需要 Walk-Forward 的平均最佳參數。")
+        return
+    with open(wf_path, encoding="utf-8") as f:
+        wf_cache = json.load(f)
+    rounds = _deserialize_rounds(wf_cache["rounds"])
+    # ── 自動計算平均參數 ──
+    avg_kp_auto = float(np.mean([r["best_kp"] for r in rounds]))
+    avg_kd_auto = float(np.mean([r["best_kd"] for r in rounds]))
+    avg_q_auto  = float(np.mean([r["best_q"]  for r in rounds]))
+    # ── 自動計算重抽樣來源範圍和模擬期間 ──
+    # 重抽樣來源：sidebar 開始日 ~ 最後一個窗口的 IS 結束日
+    last_is_end = rounds[-1]["is_end"]  # datetime.date
+    # 模擬起點：最後一個 IS 結束的隔年年初
+    sim_start = date(last_is_end.year + 1, 1, 1)
+    # 模擬終點：今年年初
+    sim_end = date(datetime.today().year, 1, 1)
+    # 模擬天數（用實際交易日數）
+    n_days_simulate = len(pd.bdate_range(sim_start, sim_end))
+    # 重抽樣來源價格（截止到最後一個 IS 結束日）
+    hist_end_idx = data.index.searchsorted(pd.Timestamp(last_is_end))
+    hist_prices_stock = data[params["ticker1"]].values[:hist_end_idx]
+    hist_prices_bond  = data[params["ticker2"]].values[:hist_end_idx]
+    st.info(
+        f"Walk-Forward 平均參數：Kp={avg_kp_auto:.3f}, Kd={avg_kd_auto:.3f}, "
+        f"Q={avg_q_auto:.6f}（共 {len(rounds)} 個窗口）\n\n"
+        f"重抽樣來源：{params['start_date']} ~ {last_is_end}｜"
+        f"模擬期間：{sim_start} ~ {sim_end}（{n_days_simulate} 個交易日）"
+    )
+    # ── 手動覆蓋參數（可選）──
+    with st.expander("⚙️ 手動覆蓋 Kp / Kd / Q（選填，留空則使用 Walk-Forward 平均值）",
+                     expanded=False):
+        with st.form("form_mc_override"):
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                override_kp = st.number_input(
+                    "Kp（覆蓋）", min_value=0.0, max_value=10.0,
+                    value=avg_kp_auto, step=0.01, format="%.4f",
+                    help=f"Walk-Forward 平均值：{avg_kp_auto:.4f}"
                 )
-
-                sim_rets_stock = rets_stock[indices]
-                sim_rets_bond = rets_bond[indices]
-                sim_prices_stock = prices_stock[0] * np.cumprod(1 + sim_rets_stock)
-                sim_prices_bond = prices_bond[0] * np.cumprod(1 + sim_rets_bond)
-                sim_dates = dates[warmup:]
-
-                # 執行回測
-                # 注意：KF 暖機用原始的 warmup_prices，每次模擬都用同一份初始化 KF
-                result = run_smart_pilot(
-                    np.concatenate([[0], sim_rets_stock]),
-                    np.concatenate([[0], sim_rets_bond]),
-                    np.concatenate([[prices_stock[0]], sim_prices_stock]),
-                    np.concatenate([[prices_bond[0]], sim_prices_bond]),
-                    sim_dates,
-                    target_w=params["target_w"],
-                    fee_rate=params["fee_rate"],
-                    kf_q=params["kf_q"],
-                    kf_r=params["kf_r"],
-                    kp=params["kp"],
-                    kd=params["kd"],
-                    deadband=params["deadband"],
-                    warmup=0,
-                    warmup_prices_stock=warmup_prices_stock,
-                    warmup_prices_bond=warmup_prices_bond,
+            with col2:
+                override_kd = st.number_input(
+                    "Kd（覆蓋）", min_value=0.0, max_value=10.0,
+                    value=avg_kd_auto, step=0.01, format="%.4f",
+                    help=f"Walk-Forward 平均值：{avg_kd_auto:.4f}"
                 )
-
-                final_nav = result["nav_list"][-1]
-                final_returns.append(final_nav - 1.0)
-
-            final_returns = np.array(final_returns)
-
-        # 統計指標
-        mean_return = float(np.mean(final_returns))
-        median_return = float(np.median(final_returns))
-        std_return = float(np.std(final_returns))
-        prob_profit = float(np.mean(final_returns > 0))
-        var_95 = float(np.percentile(final_returns, 5))
-        var_99 = float(np.percentile(final_returns, 1))
-        ruin_risk = float(np.mean(final_returns < -0.5))
-
-        # 顯示關鍵指標
-        st.subheader("關鍵統計指標")
-        col1, col2, col3, col4 = st.columns(4)
+            with col3:
+                override_q = st.number_input(
+                    "Q（覆蓋）", min_value=0.0, max_value=1.0,
+                    value=avg_q_auto, step=0.00001, format="%.6f",
+                    help=f"Walk-Forward 平均值：{avg_q_auto:.6f}"
+                )
+            use_override = st.form_submit_button("套用覆蓋參數")
+        if use_override:
+            st.session_state["mc_override_kp"] = override_kp
+            st.session_state["mc_override_kd"] = override_kd
+            st.session_state["mc_override_q"]  = override_q
+            st.success(f"已套用覆蓋參數：Kp={override_kp:.4f}, Kd={override_kd:.4f}, Q={override_q:.6f}")
+    # 決定實際使用的參數（有覆蓋就用覆蓋，否則用平均）
+    avg_kp = st.session_state.get("mc_override_kp", avg_kp_auto)
+    avg_kd = st.session_state.get("mc_override_kd", avg_kd_auto)
+    avg_q  = st.session_state.get("mc_override_q",  avg_q_auto)
+    if (avg_kp != avg_kp_auto or avg_kd != avg_kd_auto or avg_q != avg_q_auto):
+        st.warning(
+            f"⚠️ 目前使用覆蓋參數：Kp={avg_kp:.4f}, Kd={avg_kd:.4f}, Q={avg_q:.6f}，"
+            f"非 Walk-Forward 平均值"
+        )
+    # ── 主設定 form ──
+    with st.form("form_mc"):
+        col1, col2 = st.columns(2)
         with col1:
-            st.metric("賺錢機率", f"{prob_profit:.1%}")
+            n_paths = st.number_input(
+                "模擬路徑數", min_value=500, max_value=10000, value=5000, step=500
+            )
         with col2:
-            st.metric("平均報酬", f"{mean_return:.2%}")
+            block_size = st.number_input(
+                "區塊大小（天）", min_value=5, max_value=63, value=20, step=1,
+                help="20=約一個月，63=約一季"
+            )
+        col1, col2 = st.columns(2)
+        with col1:
+            random_seed = st.number_input(
+                "隨機種子", min_value=0, max_value=9999, value=42
+            )
+        st.markdown("**Smart Pilot Deadband 掃描範圍**")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            mc_db_min = st.number_input(
+                "Deadband 最小值", value=0.005, min_value=0.001, step=0.005, format="%.3f"
+            )
+        with col2:
+            mc_db_max = st.number_input(
+                "Deadband 最大值", value=0.10, min_value=0.01, step=0.01, format="%.3f"
+            )
         with col3:
-            st.metric("95% VaR", f"{var_95:.2%}")
-        with col4:
-            st.metric("破產風險", f"{ruin_risk:.2%}")
-
-        # 報酬分布直方圖
-        st.subheader("報酬率分布")
-        fig = go.Figure()
-        fig.add_trace(go.Histogram(
-            x=final_returns * 100,
-            nbinsx=100,
-            name="報酬分布",
-            marker_color="#1f77b4"
-        ))
-
-        # 添加參考線
-        fig.add_shape(
-            type="line",
-            x0=0, x1=0, y0=0, y1=1, yref="paper",
-            line=dict(color="black", width=2)
+            mc_db_points = st.number_input(
+                "Deadband 點數", value=10, min_value=3, step=1
+            )
+        st.markdown("**TO / TAT Tolerance 掃描範圍**")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            mc_tol_min = st.number_input(
+                "Tolerance 最小值", value=0.005, min_value=0.001, step=0.005, format="%.3f"
+            )
+        with col2:
+            mc_tol_max = st.number_input(
+                "Tolerance 最大值", value=0.15, min_value=0.01, step=0.01, format="%.3f"
+            )
+        with col3:
+            mc_tol_points = st.number_input(
+                "Tolerance 點數", value=10, min_value=3, step=1
+            )
+        submitted_mc = st.form_submit_button(
+            "▶ 執行 Walk-Forward MC", type="primary", use_container_width=True
         )
-        fig.add_annotation(
-            x=0, y=1.02, yref="paper",
-            text="盈虧分界", showarrow=False
-        )
-
-        fig.add_shape(
-            type="line",
-            x0=mean_return * 100, x1=mean_return * 100, y0=0, y1=1, yref="paper",
-            line=dict(color="red", width=2, dash="dash")
-        )
-        fig.add_annotation(
-            x=mean_return * 100, y=1.05, yref="paper",
-            text=f"平均 {mean_return:.1%}", showarrow=False, font=dict(color="red")
-        )
-
-        fig.add_shape(
-            type="line",
-            x0=var_95 * 100, x1=var_95 * 100, y0=0, y1=1, yref="paper",
-            line=dict(color="blue", width=2, dash="dot")
-        )
-        fig.add_annotation(
-            x=var_95 * 100, y=0.95, yref="paper",
-            text=f"95% VaR", showarrow=False, font=dict(color="blue")
-        )
-
-        fig.update_layout(
-            xaxis_title="最終報酬率 (%)",
-            yaxis_title="出現次數",
-            showlegend=False
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-        # 詳細統計表
-        with st.expander("詳細統計"):
-            stats_df = pd.DataFrame([
-                {"統計量": "平均報酬率", "數值": f"{mean_return:.2%}"},
-                {"統計量": "中位數報酬率", "數值": f"{median_return:.2%}"},
-                {"統計量": "標準差", "數值": f"{std_return:.2%}"},
-                {"統計量": "偏態", "數值": f"{float(pd.Series(final_returns).skew()):.2f}"},
-                {"統計量": "峰態", "數值": f"{float(pd.Series(final_returns).kurtosis()):.2f}"},
-                {"統計量": "5th 百分位", "數值": f"{float(np.percentile(final_returns, 5)):.2%}"},
-                {"統計量": "25th 百分位", "數值": f"{float(np.percentile(final_returns, 25)):.2%}"},
-                {"統計量": "75th 百分位", "數值": f"{float(np.percentile(final_returns, 75)):.2%}"},
-                {"統計量": "95th 百分位", "數值": f"{float(np.percentile(final_returns, 95)):.2%}"},
-                {"統計量": "99% VaR", "數值": f"{var_99:.2%}"},
-                {"統計量": "破產風險 (>50% 虧損)", "數值": f"{ruin_risk:.2%}"},
-            ])
-            st.dataframe(stats_df, use_container_width=True, hide_index=True)
-
-        # 診斷提示
-        st.subheader("診斷提示")
-
-        if prob_profit >= 0.9:
-            st.success(f"賺錢機率 {prob_profit:.1%}，策略在各種市場情境下都具有穩健的獲利能力。")
-        elif prob_profit >= 0.8:
-            st.info(f"賺錢機率 {prob_profit:.1%}，策略整體穩健。")
-        elif prob_profit >= 0.6:
-            st.warning(f"賺錢機率 {prob_profit:.1%}，偏低。建議檢查參數設定。")
-        else:
-            st.error(f"賺錢機率 {prob_profit:.1%}，策略存在問題。")
-
-        if var_95 > -0.1:
-            st.success(f"95% VaR 為 {var_95:.1%}，下行風險控制良好。")
-        elif var_95 > -0.2:
-            st.info(f"95% VaR 為 {var_95:.1%}，下行風險在可接受範圍。")
-        else:
-            st.warning(f"95% VaR 為 {var_95:.1%}，下行風險偏高。建議加大 Kd 或 deadband。")
+    # ── Hash 比對 ──
+    mc_hash_params = {
+        "ticker1": params["ticker1"], "ticker2": params["ticker2"],
+        "start_date": str(params["start_date"]), "end_date": str(params["end_date"]),
+        "target_w": params["target_w"], "fee_rate": params["fee_rate"],
+        "kf_r": params["kf_r"], "d_clip": params["d_clip"], "output_clip": params["output_clip"],
+        "norm_ref_rmse": params["norm_ref_rmse"], "norm_ref_cost": params["norm_ref_cost"],
+        "avg_kp": round(avg_kp, 6), "avg_kd": round(avg_kd, 6), "avg_q": round(avg_q, 8),
+        "n_paths": int(n_paths), "block_size": int(block_size),
+        "n_days_simulate": n_days_simulate, "random_seed": int(random_seed),
+        "mc_db_min": mc_db_min, "mc_db_max": mc_db_max, "mc_db_points": int(mc_db_points),
+        "mc_tol_min": mc_tol_min, "mc_tol_max": mc_tol_max, "mc_tol_points": int(mc_tol_points),
+        "last_is_end": str(last_is_end),
+    }
+    current_hash = make_params_hash(mc_hash_params)
+    mc_cache_path = Path("data/cache/mc_results.json")
+    mc_result = None
+    if submitted_mc:
+        if mc_cache_path.exists():
+            with open(mc_cache_path, encoding="utf-8") as f:
+                mc_cache = json.load(f)
+            if mc_cache.get("params_hash") == current_hash:
+                st.success("✅ 參數未變，使用上次 MC 結果")
+                mc_result = {k: np.array(v) for k, v in mc_cache["data"].items()}
+        if mc_result is None:
+            deadband_values = np.linspace(mc_db_min, mc_db_max, int(mc_db_points)).tolist()
+            tol_values      = np.linspace(mc_tol_min, mc_tol_max, int(mc_tol_points)).tolist()
+            mc_progress = st.progress(0)
+            mc_status   = st.empty()
+            mc_status.text(
+                f"矩陣化生成 {int(n_paths)} 條路徑（{sim_start}~{sim_end}）並平行回測中..."
+            )
+            t0 = time.time()
+            from validation.monte_carlo import run_wf_monte_carlo
+            mc_result = run_wf_monte_carlo(
+                hist_prices_stock=hist_prices_stock,
+                hist_prices_bond=hist_prices_bond,
+                n_paths=int(n_paths),
+                n_days_simulate=n_days_simulate,
+                block_size=int(block_size),
+                avg_kp=avg_kp, avg_kd=avg_kd, avg_q=avg_q,
+                kf_r=params["kf_r"],
+                target_w=params["target_w"],
+                fee_rate=params["fee_rate"],
+                d_clip=params["d_clip"],
+                output_clip=params["output_clip"],
+                warmup_prices_stock=warmup_prices_stock,
+                warmup_prices_bond=warmup_prices_bond,
+                deadband_values=deadband_values,
+                tol_values=tol_values,
+                norm_ref_rmse=params["norm_ref_rmse"],
+                norm_ref_cost=params["norm_ref_cost"],
+                random_seed=int(random_seed),
+                n_jobs=params["n_jobs"],
+            )
+            elapsed = time.time() - t0
+            mc_progress.progress(1.0)
+            mc_status.text(f"完成！{int(n_paths)} 條路徑，耗時 {elapsed:.1f} 秒")
+            mc_cache_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(mc_cache_path, "w", encoding="utf-8") as f:
+                json.dump({
+                    "data": {k: v.tolist() for k, v in mc_result.items()},
+                    "params_hash": current_hash,
+                }, f, ensure_ascii=False, indent=2)
+    elif mc_cache_path.exists():
+        with open(mc_cache_path, encoding="utf-8") as f:
+            mc_cache = json.load(f)
+        mc_result = {k: np.array(v) for k, v in mc_cache["data"].items()}
+        if mc_cache.get("params_hash") != current_hash:
+            st.warning("⚠️ 目前參數與快取結果不符，如需更新請重新執行")
+    else:
+        st.info("請設定好參數後按「▶ 執行 Walk-Forward MC」")
+        return
+    if mc_result is None:
+        return
 
 
 # =============================================================================
