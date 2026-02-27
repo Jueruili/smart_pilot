@@ -1,483 +1,208 @@
 """
-蒙地卡羅模擬模組
+Walk-Forward Monte Carlo 驗證模組
 
-使用 Bootstrap 方法對回測結果進行蒙地卡羅模擬，
-評估策略的統計特性和風險。
-
-主要功能：
-- 報酬序列重組（Bootstrap with replacement）
-- 統計指標分析（信賴區間、破產風險等）
-- 可重現的隨機模擬
-
-作者：Smart Pilot Team
-版本：1.0.0
+提供兩個函式：
+- generate_block_bootstrap_matrix: 矩陣化 Block Bootstrap 路徑生成
+- run_wf_monte_carlo: 平行跑三策略回測，回傳各路徑績效陣列
 """
-
-from typing import Optional, Union
-from dataclasses import dataclass, field
-
-import pandas as pd
+import math
 import numpy as np
-from tqdm import tqdm
+import pandas as pd
+from joblib import Parallel, delayed
 
-from core.backtest_engine import BacktestResult
-
-
-# 預設參數
-DEFAULT_N_SIMULATIONS: int = 10000
-DEFAULT_RANDOM_SEED: Optional[int] = None
+from core.benchmark import run_smart_pilot, run_threshold_only, run_time_and_threshold
+from core.optimizer import calc_hypervolume
 
 
-@dataclass
-class MonteCarloResult:
-    """蒙地卡羅模擬結果
-
-    Attributes:
-        simulations: 模擬結果陣列（每次模擬的最終報酬率）
-        statistics: 統計指標字典
-        n_simulations: 模擬次數
-        n_periods: 模擬期數（交易日數）
-        random_seed: 使用的隨機種子
+def generate_block_bootstrap_matrix(
+    hist_prices_stock: np.ndarray,
+    hist_prices_bond: np.ndarray,
+    n_paths: int,
+    n_days_simulate: int,
+    block_size: int = 20,
+    random_seed: int = 42,
+) -> dict:
     """
-    simulations: np.ndarray
-    statistics: dict
-    n_simulations: int
-    n_periods: int
-    random_seed: Optional[int] = None
-
-
-class MonteCarloSimulator:
-    """蒙地卡羅模擬器
-
-    使用 Bootstrap 方法從歷史回測結果中隨機重組報酬率，
-    模擬多次投資路徑，評估策略的統計特性和風險。
-
-    Attributes:
-        random_seed: 隨機種子（用於結果可重現）
-        rng: numpy 隨機數生成器
-
-    Example:
-        >>> from core.backtest_engine import BacktestEngine
-        >>> from data.data_loader import DataLoader
-        >>>
-        >>> # 載入資料並執行回測
-        >>> loader = DataLoader()
-        >>> data = loader.load_and_process()
-        >>> engine = BacktestEngine(target_ratio=0.6)
-        >>> backtest_result = engine.run(data)
-        >>>
-        >>> # 執行蒙地卡羅模擬
-        >>> simulator = MonteCarloSimulator(random_seed=42)
-        >>> result = simulator.simulate(backtest_result, n_simulations=10000)
-        >>>
-        >>> # 查看統計結果
-        >>> print(f"平均報酬率: {result.statistics['mean_return']:.2%}")
-        >>> print(f"賺錢機率: {result.statistics['prob_profit']:.1%}")
-    """
-
-    def __init__(self, random_seed: Optional[int] = None) -> None:
-        """初始化模擬器
-
-        Args:
-            random_seed: 隨機種子，設定後模擬結果可重現
-                - None: 每次執行結果不同
-                - 整數: 固定隨機種子，結果可重現
-        """
-        self.random_seed = random_seed
-        self.rng = np.random.default_rng(random_seed)
-
-        print(f"[MonteCarloSimulator] 初始化完成")
-        if random_seed is not None:
-            print(f"[MonteCarloSimulator] 隨機種子: {random_seed}")
-
-    def simulate(
-        self,
-        backtest_result: BacktestResult,
-        n_simulations: int = DEFAULT_N_SIMULATIONS,
-        show_progress: bool = True
-    ) -> MonteCarloResult:
-        """執行蒙地卡羅模擬
-
-        從歷史回測結果提取每日報酬率，使用 Bootstrap 方法
-        （有放回抽樣）隨機重組報酬率序列，模擬多次投資路徑。
-
-        Bootstrap 方法說明：
-        1. 從歷史的 n 個日報酬率中，有放回地隨機抽取 n 個
-        2. 將抽取的報酬率累積計算最終淨值
-        3. 重複 n_simulations 次
-
-        Args:
-            backtest_result: 回測引擎執行的結果
-            n_simulations: 模擬次數，預設 10000 次
-            show_progress: 是否顯示進度條
-
-        Returns:
-            MonteCarloResult: 包含模擬結果和統計指標
-
-        Raises:
-            ValueError: 當回測結果為空或無效時拋出
-
-        Example:
-            >>> result = simulator.simulate(backtest_result, n_simulations=10000)
-            >>> print(f"模擬次數: {result.n_simulations}")
-        """
-        # 1. 提取每日報酬率
-        daily_returns = self._extract_daily_returns(backtest_result)
-        n_periods = len(daily_returns)
-
-        print(f"\n[MonteCarloSimulator] 開始蒙地卡羅模擬")
-        print(f"[MonteCarloSimulator] 歷史交易日數: {n_periods}")
-        print(f"[MonteCarloSimulator] 模擬次數: {n_simulations:,}")
-
-        # 2. 執行 Bootstrap 模擬
-        simulations = self._run_bootstrap(
-            daily_returns,
-            n_simulations,
-            show_progress
-        )
-
-        # 3. 分析結果
-        statistics = self.analyze_results(simulations)
-
-        print(f"[MonteCarloSimulator] 模擬完成")
-
-        return MonteCarloResult(
-            simulations=simulations,
-            statistics=statistics,
-            n_simulations=n_simulations,
-            n_periods=n_periods,
-            random_seed=self.random_seed
-        )
-
-    def _extract_daily_returns(self, backtest_result: BacktestResult) -> np.ndarray:
-        """從回測結果提取每日報酬率
-
-        計算公式：
-            daily_return = (NAV_t - NAV_{t-1}) / NAV_{t-1}
-
-        Args:
-            backtest_result: 回測結果
-
-        Returns:
-            np.ndarray: 每日報酬率陣列
-
-        Raises:
-            ValueError: 當資料無效時拋出
-        """
-        history = backtest_result.history
-
-        if history is None or len(history) < 2:
-            raise ValueError("回測結果無效：歷史記錄為空或資料不足")
-
-        # 檢查是否有 nav 欄位
-        if "nav" not in history.columns:
-            raise ValueError("回測結果無效：缺少 'nav' 欄位")
-
-        # 計算每日報酬率
-        nav = history["nav"].values
-        daily_returns = np.diff(nav) / nav[:-1]
-
-        # 移除 NaN 和 Inf
-        valid_mask = np.isfinite(daily_returns)
-        daily_returns = daily_returns[valid_mask]
-
-        if len(daily_returns) == 0:
-            raise ValueError("無有效的每日報酬率資料")
-
-        return daily_returns
-
-    def _run_bootstrap(
-        self,
-        daily_returns: np.ndarray,
-        n_simulations: int,
-        show_progress: bool
-    ) -> np.ndarray:
-        """執行 Bootstrap 模擬（向量化加速版本）
-
-        使用 numpy 向量化操作加速計算，避免 Python 迴圈。
-
-        Args:
-            daily_returns: 歷史每日報酬率
-            n_simulations: 模擬次數
-            show_progress: 是否顯示進度條
-
-        Returns:
-            np.ndarray: 每次模擬的最終報酬率
-        """
-        n_periods = len(daily_returns)
-
-        # 向量化方式：一次生成所有模擬的隨機索引
-        # 形狀: (n_simulations, n_periods)
-        random_indices = self.rng.integers(
-            0, n_periods, size=(n_simulations, n_periods)
-        )
-
-        # 根據索引取得抽樣的報酬率
-        # 形狀: (n_simulations, n_periods)
-        sampled_returns = daily_returns[random_indices]
-
-        # 計算累積報酬（沿著每次模擬的時間軸）
-        # 使用 1 + r 的累積乘積
-        if show_progress:
-            # 分批處理以顯示進度
-            batch_size = 1000
-            n_batches = (n_simulations + batch_size - 1) // batch_size
-            final_returns = np.zeros(n_simulations)
-
-            with tqdm(total=n_simulations, desc="蒙地卡羅模擬") as pbar:
-                for i in range(n_batches):
-                    start_idx = i * batch_size
-                    end_idx = min((i + 1) * batch_size, n_simulations)
-                    batch_returns = sampled_returns[start_idx:end_idx]
-
-                    # 累積報酬計算
-                    cumulative = np.cumprod(1 + batch_returns, axis=1)
-                    final_returns[start_idx:end_idx] = cumulative[:, -1] - 1
-
-                    pbar.update(end_idx - start_idx)
-        else:
-            # 不顯示進度時直接計算
-            cumulative = np.cumprod(1 + sampled_returns, axis=1)
-            final_returns = cumulative[:, -1] - 1
-
-        return final_returns
-
-    def analyze_results(self, simulations: np.ndarray) -> dict:
-        """分析模擬結果，計算統計指標
-
-        計算的指標包括：
-        - 平均報酬率（mean_return）
-        - 標準差（std_return）
-        - 賺錢機率（prob_profit）：報酬 > 0 的比例
-        - 95% 信賴區間（ci_95）：2.5% 和 97.5% 分位數
-        - 99% 信賴區間（ci_99）：0.5% 和 99.5% 分位數
-        - 最好情況（best_case）：最高報酬
-        - 最壞情況（worst_case）：最低報酬
-        - 破產風險（ruin_risk）：虧損 > 50% 的比例
-
-        Args:
-            simulations: 模擬結果陣列（每次模擬的最終報酬率）
-
-        Returns:
-            dict: 統計指標字典，包含以下鍵值：
-                - mean_return: float - 平均報酬率
-                - std_return: float - 報酬率標準差
-                - prob_profit: float - 賺錢機率
-                - ci_95_lower: float - 95% CI 下界
-                - ci_95_upper: float - 95% CI 上界
-                - ci_99_lower: float - 99% CI 下界
-                - ci_99_upper: float - 99% CI 上界
-                - best_case: float - 最佳情況報酬
-                - worst_case: float - 最差情況報酬
-                - ruin_risk: float - 破產風險（虧損>50%）
-
-        Example:
-            >>> stats = simulator.analyze_results(simulations)
-            >>> print(f"平均報酬: {stats['mean_return']:.2%}")
-            >>> print(f"95% CI: [{stats['ci_95_lower']:.2%}, {stats['ci_95_upper']:.2%}]")
-        """
-        if len(simulations) == 0:
-            raise ValueError("模擬結果為空")
-
-        # 平均報酬率
-        # mean = (1/n) * Σ(r_i)
-        mean_return = np.mean(simulations)
-
-        # 標準差
-        # std = sqrt((1/n) * Σ(r_i - mean)^2)
-        std_return = np.std(simulations)
-
-        # 賺錢機率
-        # prob_profit = count(r > 0) / n
-        prob_profit = np.mean(simulations > 0)
-
-        # 95% 信賴區間（2.5% 和 97.5% 分位數）
-        ci_95_lower = np.percentile(simulations, 2.5)
-        ci_95_upper = np.percentile(simulations, 97.5)
-
-        # 99% 信賴區間（0.5% 和 99.5% 分位數）
-        ci_99_lower = np.percentile(simulations, 0.5)
-        ci_99_upper = np.percentile(simulations, 99.5)
-
-        # 最好情況（最高報酬）
-        best_case = np.max(simulations)
-
-        # 最壞情況（最低報酬）
-        worst_case = np.min(simulations)
-
-        # 破產風險（虧損 > 50% 的比例）
-        # ruin_risk = count(r < -0.5) / n
-        ruin_risk = np.mean(simulations < -0.5)
-
-        # 額外有用的統計量
-        median_return = np.median(simulations)
-        skewness = self._calculate_skewness(simulations, mean_return, std_return)
-        kurtosis = self._calculate_kurtosis(simulations, mean_return, std_return)
-
-        statistics = {
-            # 基本統計
-            "mean_return": mean_return,
-            "std_return": std_return,
-            "median_return": median_return,
-            "skewness": skewness,
-            "kurtosis": kurtosis,
-
-            # 機率
-            "prob_profit": prob_profit,
-            "ruin_risk": ruin_risk,
-
-            # 信賴區間
-            "ci_95_lower": ci_95_lower,
-            "ci_95_upper": ci_95_upper,
-            "ci_99_lower": ci_99_lower,
-            "ci_99_upper": ci_99_upper,
-
-            # 極端情況
-            "best_case": best_case,
-            "worst_case": worst_case,
-
-            # 其他分位數
-            "percentile_5": np.percentile(simulations, 5),
-            "percentile_25": np.percentile(simulations, 25),
-            "percentile_75": np.percentile(simulations, 75),
-            "percentile_95": np.percentile(simulations, 95),
-        }
-
-        return statistics
-
-    def _calculate_skewness(
-        self,
-        data: np.ndarray,
-        mean: float,
-        std: float
-    ) -> float:
-        """計算偏態係數
-
-        偏態係數公式：
-            skewness = (1/n) * Σ((x_i - mean) / std)^3
-
-        Args:
-            data: 資料陣列
-            mean: 平均值
-            std: 標準差
-
-        Returns:
-            float: 偏態係數
-        """
-        if std == 0:
-            return 0.0
-        n = len(data)
-        return np.sum(((data - mean) / std) ** 3) / n
-
-    def _calculate_kurtosis(
-        self,
-        data: np.ndarray,
-        mean: float,
-        std: float
-    ) -> float:
-        """計算峰態係數（超額峰態）
-
-        峰態係數公式：
-            kurtosis = (1/n) * Σ((x_i - mean) / std)^4 - 3
-
-        減去 3 是為了讓常態分布的峰態為 0（超額峰態）
-
-        Args:
-            data: 資料陣列
-            mean: 平均值
-            std: 標準差
-
-        Returns:
-            float: 峰態係數（超額峰態）
-        """
-        if std == 0:
-            return 0.0
-        n = len(data)
-        return np.sum(((data - mean) / std) ** 4) / n - 3
-
-    def get_report(self, result: MonteCarloResult) -> str:
-        """生成模擬報告
-
-        Args:
-            result: 蒙地卡羅模擬結果
-
-        Returns:
-            str: 格式化的報告文字
-        """
-        stats = result.statistics
-
-        report = f"""
-=====================================
-      蒙地卡羅模擬報告
-=====================================
-
-模擬設定:
-  模擬次數:         {result.n_simulations:>12,}
-  模擬期數(交易日): {result.n_periods:>12}
-  隨機種子:         {result.random_seed if result.random_seed else '未設定':>12}
-
-【報酬統計】
-  平均報酬率:       {stats['mean_return']:>12.2%}
-  中位數報酬率:     {stats['median_return']:>12.2%}
-  標準差:           {stats['std_return']:>12.2%}
-  偏態:             {stats['skewness']:>12.2f}
-  峰態:             {stats['kurtosis']:>12.2f}
-
-【機率估計】
-  賺錢機率:         {stats['prob_profit']:>12.1%}
-  破產風險(>50%虧損): {stats['ruin_risk']:>12.1%}
-
-【信賴區間】
-  95% CI:           [{stats['ci_95_lower']:>8.2%}, {stats['ci_95_upper']:>8.2%}]
-  99% CI:           [{stats['ci_99_lower']:>8.2%}, {stats['ci_99_upper']:>8.2%}]
-
-【極端情況】
-  最佳情況:         {stats['best_case']:>12.2%}
-  最差情況:         {stats['worst_case']:>12.2%}
-
-【報酬分布】
-   5th percentile:  {stats['percentile_5']:>12.2%}
-  25th percentile:  {stats['percentile_25']:>12.2%}
-  50th percentile:  {stats['median_return']:>12.2%}
-  75th percentile:  {stats['percentile_75']:>12.2%}
-  95th percentile:  {stats['percentile_95']:>12.2%}
-
-=====================================
-"""
-        return report
-
-    def reset_seed(self, new_seed: Optional[int] = None) -> None:
-        """重設隨機種子
-
-        Args:
-            new_seed: 新的隨機種子，None 表示不固定種子
-        """
-        self.random_seed = new_seed
-        self.rng = np.random.default_rng(new_seed)
-        print(f"[MonteCarloSimulator] 隨機種子已重設為: {new_seed}")
-
-
-def quick_simulate(
-    backtest_result: BacktestResult,
-    n_simulations: int = DEFAULT_N_SIMULATIONS,
-    random_seed: Optional[int] = None
-) -> MonteCarloResult:
-    """快速執行蒙地卡羅模擬（便捷函數）
+    矩陣化 Block Bootstrap：一次生成所有模擬路徑，不使用任何 Python for 迴圈。
 
     Args:
-        backtest_result: 回測結果
-        n_simulations: 模擬次數
-        random_seed: 隨機種子
+        hist_prices_stock: 歷史股票價格序列（長度 M）
+        hist_prices_bond:  歷史債券價格序列（長度 M）
+        n_paths:           模擬路徑數
+        n_days_simulate:   每條路徑的模擬天數
+        block_size:        Bootstrap 區塊大小（天）
+        random_seed:       隨機種子
 
     Returns:
-        MonteCarloResult: 模擬結果
-
-    Example:
-        >>> from core.backtest_engine import BacktestEngine
-        >>> engine = BacktestEngine()
-        >>> backtest_result = engine.run(data)
-        >>> mc_result = quick_simulate(backtest_result, n_simulations=10000, random_seed=42)
-        >>> print(f"平均報酬: {mc_result.statistics['mean_return']:.2%}")
+        dict with keys:
+            sim_rets_stock, sim_rets_bond   shape (n_paths, n_days_simulate)
+            sim_prices_stock, sim_prices_bond  shape (n_paths, n_days_simulate)
+            p0_stock, p0_bond               float（起始價格）
     """
-    simulator = MonteCarloSimulator(random_seed=random_seed)
-    return simulator.simulate(backtest_result, n_simulations)
+    hist_rets_stock = np.diff(hist_prices_stock) / hist_prices_stock[:-1]
+    hist_rets_bond  = np.diff(hist_prices_bond)  / hist_prices_bond[:-1]
+
+    n_blocks_needed = math.ceil(n_days_simulate / block_size)
+    total_blocks = len(hist_rets_stock) - block_size + 1
+
+    rng = np.random.default_rng(random_seed)
+    block_starts = rng.integers(0, total_blocks, size=(n_paths, n_blocks_needed))
+
+    offsets = np.arange(block_size)
+    indices = (block_starts[:, :, None] + offsets[None, None, :]).reshape(n_paths, -1)
+    indices = indices[:, :n_days_simulate]
+
+    sim_rets_stock = hist_rets_stock[indices]
+    sim_rets_bond  = hist_rets_bond[indices]
+
+    p0_stock = hist_prices_stock[-1]
+    p0_bond  = hist_prices_bond[-1]
+    sim_prices_stock = p0_stock * np.cumprod(1 + sim_rets_stock, axis=1)
+    sim_prices_bond  = p0_bond  * np.cumprod(1 + sim_rets_bond,  axis=1)
+
+    return {
+        "sim_rets_stock":   sim_rets_stock,
+        "sim_rets_bond":    sim_rets_bond,
+        "sim_prices_stock": sim_prices_stock,
+        "sim_prices_bond":  sim_prices_bond,
+        "p0_stock": p0_stock,
+        "p0_bond":  p0_bond,
+    }
+
+
+def run_wf_monte_carlo(
+    hist_prices_stock: np.ndarray,
+    hist_prices_bond: np.ndarray,
+    n_paths: int,
+    n_days_simulate: int,
+    block_size: int,
+    avg_kp: float,
+    avg_kd: float,
+    avg_q: float,
+    kf_r: float,
+    target_w: float,
+    fee_rate: float,
+    d_clip: float,
+    output_clip: float,
+    warmup_prices_stock: np.ndarray,
+    warmup_prices_bond: np.ndarray,
+    deadband_values: list,
+    tol_values: list,
+    norm_ref_rmse: float,
+    norm_ref_cost: float,
+    random_seed: int = 42,
+    n_jobs: int = 1,
+) -> dict:
+    """
+    Monte Carlo 三策略回測。
+
+    每條路徑分別對 Smart Pilot / Threshold-only / Time-and-threshold
+    掃描最佳參數（maximise normalised HV），回傳各路徑績效陣列。
+
+    Returns:
+        dict，每個 key 對應一個 shape (n_paths,) 的 np.ndarray：
+            sp_hv, sp_ret, sp_vol, sp_trades
+            to_hv, to_ret, to_vol, to_trades
+            tat_hv, tat_ret, tat_vol, tat_trades
+    """
+    # Step 1：矩陣化生成所有路徑
+    matrix = generate_block_bootstrap_matrix(
+        hist_prices_stock, hist_prices_bond,
+        n_paths, n_days_simulate, block_size, random_seed,
+    )
+
+    n_years = n_days_simulate / 252.0
+    # run_time_and_threshold 使用 dates[i].year，需要真實日期物件
+    sim_dates = pd.date_range("2019-01-01", periods=n_days_simulate, freq="B").tolist()
+
+    # Step 2：單條路徑回測函式
+    def _run_one_path(i):
+        rets_s   = matrix["sim_rets_stock"][i]
+        rets_b   = matrix["sim_rets_bond"][i]
+        prices_s = matrix["sim_prices_stock"][i]
+        prices_b = matrix["sim_prices_bond"][i]
+
+        def _hv(r):
+            ann_cost = r["cost"] / n_years
+            if r["rmse"] / norm_ref_rmse <= 1.0 and ann_cost / norm_ref_cost <= 1.0:
+                norm_pts = [{"rmse": r["rmse"] / norm_ref_rmse,
+                             "cost": ann_cost / norm_ref_cost}]
+            else:
+                norm_pts = []
+            return calc_hypervolume(norm_pts, {"rmse": 1.0, "cost": 1.0})
+
+        def _ann_ret(r):
+            nav_final = r["nav_list"][-1] if r["nav_list"] else 1.0
+            return float(nav_final ** (252.0 / n_days_simulate) - 1)
+
+        def _ann_vol(r):
+            return float(r["metrics"]["ann_wealth_vol"])
+
+        # Smart Pilot：掃 deadband_values
+        best_sp_hv, best_sp_r = -1.0, None
+        for db in deadband_values:
+            r = run_smart_pilot(
+                rets_s, rets_b, prices_s, prices_b, sim_dates,
+                target_w=target_w, fee_rate=fee_rate,
+                kf_q=avg_q, kf_r=kf_r,
+                kp=avg_kp, kd=avg_kd,
+                deadband=float(db), warmup=0,
+                warmup_prices_stock=warmup_prices_stock,
+                warmup_prices_bond=warmup_prices_bond,
+                d_clip=d_clip, output_clip=output_clip,
+            )
+            hv = _hv(r)
+            if hv > best_sp_hv:
+                best_sp_hv, best_sp_r = hv, r
+
+        # Threshold-only：掃 tol_values
+        best_to_hv, best_to_r = -1.0, None
+        for tol in tol_values:
+            r = run_threshold_only(
+                rets_s, rets_b, sim_dates,
+                target_w=target_w, drift_tolerance=float(tol),
+                fee_rate=fee_rate, warmup=0,
+            )
+            hv = _hv(r)
+            if hv > best_to_hv:
+                best_to_hv, best_to_r = hv, r
+
+        # Time-and-threshold：掃 tol_values
+        best_tat_hv, best_tat_r = -1.0, None
+        for tol in tol_values:
+            r = run_time_and_threshold(
+                rets_s, rets_b, sim_dates,
+                target_w=target_w, fee_rate=fee_rate,
+                threshold=float(tol), warmup=0,
+            )
+            hv = _hv(r)
+            if hv > best_tat_hv:
+                best_tat_hv, best_tat_r = hv, r
+
+        return {
+            "sp_hv":      best_sp_hv,
+            "sp_ret":     _ann_ret(best_sp_r)  if best_sp_r  else 0.0,
+            "sp_vol":     _ann_vol(best_sp_r)  if best_sp_r  else 0.0,
+            "sp_trades":  best_sp_r["trade_count"] if best_sp_r  else 0,
+            "to_hv":      best_to_hv,
+            "to_ret":     _ann_ret(best_to_r)  if best_to_r  else 0.0,
+            "to_vol":     _ann_vol(best_to_r)  if best_to_r  else 0.0,
+            "to_trades":  best_to_r["trade_count"] if best_to_r  else 0,
+            "tat_hv":     best_tat_hv,
+            "tat_ret":    _ann_ret(best_tat_r) if best_tat_r else 0.0,
+            "tat_vol":    _ann_vol(best_tat_r) if best_tat_r else 0.0,
+            "tat_trades": best_tat_r["trade_count"] if best_tat_r else 0,
+        }
+
+    # Step 3：平行執行
+    path_results = Parallel(n_jobs=n_jobs)(
+        delayed(_run_one_path)(i) for i in range(n_paths)
+    )
+
+    # Step 4：整理成陣列回傳
+    keys = [
+        "sp_hv",  "sp_ret",  "sp_vol",  "sp_trades",
+        "to_hv",  "to_ret",  "to_vol",  "to_trades",
+        "tat_hv", "tat_ret", "tat_vol", "tat_trades",
+    ]
+    return {k: np.array([r[k] for r in path_results]) for k in keys}
