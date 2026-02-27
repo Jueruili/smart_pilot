@@ -2022,6 +2022,143 @@ def render_tab_monte_carlo(params: dict, data: pd.DataFrame,
     if mc_result is None:
         return
 
+    # ── 取出陣列 ──
+    sp_hv,  sp_ret,  sp_vol,  sp_trades  = (mc_result["sp_hv"],  mc_result["sp_ret"],
+                                              mc_result["sp_vol"],  mc_result["sp_trades"])
+    to_hv,  to_ret,  to_vol,  to_trades  = (mc_result["to_hv"],  mc_result["to_ret"],
+                                              mc_result["to_vol"],  mc_result["to_trades"])
+    tat_hv, tat_ret, tat_vol, tat_trades = (mc_result["tat_hv"], mc_result["tat_ret"],
+                                              mc_result["tat_vol"], mc_result["tat_trades"])
+    excess_sp_vs_to  = sp_ret - to_ret
+    excess_sp_vs_tat = sp_ret - tat_ret
+    sp_dominates = float(np.mean((sp_ret > to_ret) & (sp_ret > tat_ret)))
+
+    # ── 摘要表格 ──
+    def pct_range(arr, lo=5, hi=95):
+        return float(np.percentile(arr, lo)), float(np.percentile(arr, hi))
+
+    summary_rows = []
+    for name, hvs, vols, rets in [
+        ("Smart Pilot",        sp_hv,  sp_vol,  sp_ret),
+        ("Threshold-only",     to_hv,  to_vol,  to_ret),
+        ("Time-and-threshold", tat_hv, tat_vol, tat_ret),
+    ]:
+        hv_lo,  hv_hi  = pct_range(hvs)
+        vol_lo, vol_hi = pct_range(vols)
+        summary_rows.append({
+            "策略":           name,
+            "HV 中位數":      f"{np.median(hvs):.4f}",
+            "HV 5th~95th":   f"{hv_lo:.4f} ~ {hv_hi:.4f}",
+            "年化波動 中位數": f"{np.median(vols)*100:.2f}%",
+            "波動 5th~95th":  f"{vol_lo*100:.2f}% ~ {vol_hi*100:.2f}%",
+            "賺錢機率":       f"{np.mean(rets > 0)*100:.1f}%",
+        })
+    st.subheader("摘要統計")
+    st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
+    st.metric("Smart Pilot 相對勝率（同時贏過兩對手）", f"{sp_dominates*100:.1f}%")
+
+    # ── 圖一：HV 分布 ──
+    st.markdown("---")
+    fig1 = go.Figure()
+    for arr, name, color in [
+        (sp_hv,  "Smart Pilot",        "#FFD700"),
+        (to_hv,  "Threshold-only",     "#808080"),
+        (tat_hv, "Time-and-threshold", "#00CED1"),
+    ]:
+        fig1.add_trace(go.Histogram(x=arr, name=name, opacity=0.7,
+                                    marker_color=color, nbinsx=60,
+                                    hovertemplate="HV: %{x:.4f}<br>Count: %{y}<extra>" + name + "</extra>"))
+        fig1.add_vline(x=float(np.median(arr)), line_dash="dash", line_color=color,
+                       annotation_text=f"{name}: {np.median(arr):.4f}",
+                       annotation_position="top")
+    fig1.update_layout(
+        title="圖一：HV 分布（三策略，5000 條路徑）",
+        xaxis_title="Hypervolume", yaxis_title="路徑數",
+        barmode="overlay", height=450, template="plotly_dark",
+        legend=dict(yanchor="top", y=0.99, xanchor="right", x=0.99),
+    )
+    st.plotly_chart(fig1, use_container_width=True)
+
+    # ── 圖二：年化波動率分布 ──
+    fig2 = go.Figure()
+    for arr, name, color in [
+        (sp_vol,  "Smart Pilot",        "#FFD700"),
+        (to_vol,  "Threshold-only",     "#808080"),
+        (tat_vol, "Time-and-threshold", "#00CED1"),
+    ]:
+        fig2.add_trace(go.Histogram(x=arr*100, name=name, opacity=0.7,
+                                    marker_color=color, nbinsx=60,
+                                    hovertemplate="波動率: %{x:.2f}%<br>Count: %{y}<extra>" + name + "</extra>"))
+        fig2.add_vline(x=float(np.median(arr)*100), line_dash="dash", line_color=color,
+                       annotation_text=f"{name}: {np.median(arr)*100:.2f}%",
+                       annotation_position="top")
+    fig2.update_layout(
+        title="圖二：年化波動率分布（三策略，5000 條路徑）",
+        xaxis_title="年化波動率 (%)", yaxis_title="路徑數",
+        barmode="overlay", height=450, template="plotly_dark",
+        legend=dict(yanchor="top", y=0.99, xanchor="right", x=0.99),
+    )
+    st.plotly_chart(fig2, use_container_width=True)
+
+    # ── 圖三：超額報酬分布 ──
+    fig3 = make_subplots(rows=1, cols=2, subplot_titles=[
+        "SP − Threshold-only 年化超額報酬",
+        "SP − Time-and-threshold 年化超額報酬",
+    ])
+    for col_idx, (excess, color, label) in enumerate([
+        (excess_sp_vs_to,  "#FF6B6B", "SP − TO"),
+        (excess_sp_vs_tat, "#A78BFA", "SP − TAT"),
+    ], start=1):
+        pos_ratio  = float(np.mean(excess > 0))
+        median_val = float(np.median(excess))
+        xref = "x domain"  if col_idx == 1 else "x2 domain"
+        yref = "y domain"  if col_idx == 1 else "y2 domain"
+        fig3.add_trace(go.Histogram(
+            x=excess*100, marker_color=color, opacity=0.8, nbinsx=60, name=label,
+            hovertemplate="超額報酬: %{x:.2f}%<br>Count: %{y}<extra></extra>",
+        ), row=1, col=col_idx)
+        fig3.add_vline(x=0, line_dash="solid", line_color="white",
+                       line_width=1.5, row=1, col=col_idx)
+        fig3.add_vline(x=median_val*100, line_dash="dash", line_color=color,
+                       annotation_text=f"中位數: {median_val*100:.3f}%",
+                       annotation_position="top", row=1, col=col_idx)
+        fig3.add_annotation(
+            x=0.05, y=0.95, xref=xref, yref=yref,
+            text=f"SP 勝率: {pos_ratio*100:.1f}%",
+            showarrow=False, font=dict(color=color, size=13),
+        )
+    fig3.update_xaxes(title_text="年化超額報酬 (%)", row=1, col=1)
+    fig3.update_xaxes(title_text="年化超額報酬 (%)", row=1, col=2)
+    fig3.update_yaxes(title_text="路徑數", row=1, col=1)
+    fig3.update_layout(
+        title="圖三：Smart Pilot 超額報酬分布",
+        height=450, showlegend=False, template="plotly_dark",
+    )
+    st.plotly_chart(fig3, use_container_width=True)
+
+    # ── 路徑明細表 ──
+    n_paths_actual = len(sp_hv)
+    st.markdown("---")
+    st.subheader(f"{n_paths_actual} 條路徑明細（點擊欄位標題可排序）")
+    detail_df = pd.DataFrame({
+        "路徑":           np.arange(1, n_paths_actual + 1),
+        "SP_HV":         np.round(sp_hv,   4),
+        "SP_年化報酬%":  np.round(sp_ret  * 100, 2),
+        "SP_年化波動%":  np.round(sp_vol  * 100, 2),
+        "SP_交易次數":   sp_trades.astype(int),
+        "TO_HV":         np.round(to_hv,   4),
+        "TO_年化報酬%":  np.round(to_ret  * 100, 2),
+        "TO_年化波動%":  np.round(to_vol  * 100, 2),
+        "TO_交易次數":   to_trades.astype(int),
+        "TAT_HV":        np.round(tat_hv,  4),
+        "TAT_年化報酬%": np.round(tat_ret * 100, 2),
+        "TAT_年化波動%": np.round(tat_vol * 100, 2),
+        "TAT_交易次數":  tat_trades.astype(int),
+        "SP超額_vs_TO%":  np.round(excess_sp_vs_to  * 100, 2),
+        "SP超額_vs_TAT%": np.round(excess_sp_vs_tat * 100, 2),
+    })
+    st.dataframe(detail_df, use_container_width=True, hide_index=True)
+
 
 # =============================================================================
 # 主程式
