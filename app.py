@@ -1776,9 +1776,15 @@ def render_tab_walking_forward(params: dict, data: pd.DataFrame,
         ]:
             res = r[strategy_key]
             m = res["metrics"]
+            hv_map = {
+                "oos_sp":  r["oos_sp_hv"],
+                "oos_to":  r["oos_to_hv"],
+                "oos_tat": r["oos_tat_hv"],
+            }
             table_rows.append({
                 "Round":   round_label,
                 "策略":    strategy_name,
+                "HV":      f"{hv_map[strategy_key]:.6f}",
                 "交易次數": str(res["trade_count"]),
                 "總周轉率": f"{res['turnover']:.3f}",
                 "RMSE":    f"{res['rmse']*100:.2f}%",
@@ -1801,9 +1807,12 @@ def render_tab_walking_forward(params: dict, data: pd.DataFrame,
         avg_sharpe = np.mean([r[strategy_key]["metrics"]["sharpe"]          for r in rounds])
         avg_mdd    = np.mean([r[strategy_key]["metrics"]["max_drawdown"]    for r in rounds])
         avg_vol    = np.mean([r[strategy_key]["metrics"]["ann_wealth_vol"]  for r in rounds])
+        hv_key_map = {"oos_sp": "oos_sp_hv", "oos_to": "oos_to_hv", "oos_tat": "oos_tat_hv"}
+        avg_hv = np.mean([r[hv_key_map[strategy_key]] for r in rounds])
         table_rows.append({
             "Round":   "**平均**",
             "策略":    strategy_name,
+            "HV":      f"{avg_hv:.6f}",
             "交易次數": f"{avg_trades:.1f}",
             "總周轉率": f"{avg_to_val:.3f}",
             "RMSE":    f"{avg_rmse*100:.2f}%",
