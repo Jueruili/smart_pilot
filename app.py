@@ -1428,7 +1428,7 @@ def render_tab_heatmap(params: dict, data: pd.DataFrame,
         m = r["metrics"]
         return {
             "策略":    name,
-            "交易次數": r["trade_count"],
+            "交易次數": str(res["trade_count"]),
             "總周轉率": f"{r['turnover']:.3f}",
             "RMSE":    f"{r['rmse']*100:.2f}%",
             "年化報酬": f"{m['ann_return']*100:.2f}%",
@@ -1779,7 +1779,7 @@ def render_tab_walking_forward(params: dict, data: pd.DataFrame,
             table_rows.append({
                 "Round":   round_label,
                 "策略":    strategy_name,
-                "交易次數": res["trade_count"],
+                "交易次數": str(res["trade_count"]),
                 "總周轉率": f"{res['turnover']:.3f}",
                 "RMSE":    f"{res['rmse']*100:.2f}%",
                 "年化報酬": f"{m['ann_return']*100:.2f}%",
@@ -2003,6 +2003,12 @@ def render_tab_monte_carlo(params: dict, data: pd.DataFrame,
                 f"矩陣化生成 {int(n_paths)} 條路徑（{sim_start}~{sim_end}）並平行回測中..."
             )
             t0 = time.time()
+            # ── DEBUG ──
+            print(f"warmup_stock len={len(warmup_prices_stock)}, warmup_bond len={len(warmup_prices_bond)}")
+            print(f"hist_stock len={len(hist_prices_stock)}, hist_bond len={len(hist_prices_bond)}")
+            print(f"NaN in hist_stock: {np.isnan(hist_prices_stock).sum()}")
+            print(f"NaN in hist_bond:  {np.isnan(hist_prices_bond).sum()}")
+            print(f"n_days_simulate={n_days_simulate}, block_size={int(block_size)}")
             from validation.monte_carlo import run_wf_monte_carlo
             mc_result = run_wf_monte_carlo(
                 hist_prices_stock=hist_prices_stock,
