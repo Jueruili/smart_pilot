@@ -820,11 +820,23 @@ def render_tab_pareto(params: dict, data: pd.DataFrame,
     st.subheader("超體積指標 (Hypervolume)")
     col1, col2, col3 = st.columns(3)
     with col1:
-        st.metric("Smart Pilot", f"{hv_sp:.6f}")
+        st.metric(
+            "Smart Pilot",
+            f"{hv_sp:.6f}",
+            help=f"×10000 = {hv_sp * 10000:.4f}"
+        )
     with col2:
-        st.metric("Threshold-only", f"{hv_to:.6f}")
+        st.metric(
+            "Threshold-only",
+            f"{hv_to:.6f}",
+            help=f"×10000 = {hv_to * 10000:.4f}"
+        )
     with col3:
-        st.metric("Time-and-threshold", f"{hv_tat:.6f}")
+        st.metric(
+            "Time-and-threshold",
+            f"{hv_tat:.6f}",
+            help=f"×10000 = {hv_tat * 10000:.4f}"
+        )
 
     winner = hv_comparison["winner"]
     if winner == "smart_pilot":
@@ -919,11 +931,23 @@ def render_tab_pareto(params: dict, data: pd.DataFrame,
         st.subheader("標準化超體積指標")
         col1, col2, col3 = st.columns(3)
         with col1:
-            st.metric("Smart Pilot", f"{hv_sp_norm:.6f}")
+            st.metric(
+                "Smart Pilot",
+                f"{hv_sp_norm:.6f}",
+                help=f"×10000 = {hv_sp_norm * 10000:.4f}"
+            )
         with col2:
-            st.metric("Threshold-only", f"{hv_to_norm:.6f}")
+            st.metric(
+                "Threshold-only",
+                f"{hv_to_norm:.6f}",
+                help=f"×10000 = {hv_to_norm * 10000:.4f}"
+            )
         with col3:
-            st.metric("Time-and-threshold", f"{hv_tat_norm:.6f}")
+            st.metric(
+                "Time-and-threshold",
+                f"{hv_tat_norm:.6f}",
+                help=f"×10000 = {hv_tat_norm * 10000:.4f}"
+            )
 
         norm_scores = {
             "Smart Pilot": hv_sp_norm,
