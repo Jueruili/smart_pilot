@@ -130,7 +130,7 @@ def render_sidebar() -> dict:
     # =========================================================================
     defaults = {
         "ticker1": "VTI", "ticker2": "BND",
-        "target_w": 0.6, "start_date": date(2013, 1, 1),
+        "target_w": 0.6, "start_date": date(2000, 1, 1),
         "end_date": date(2024, 1, 1), "fee_rate": 0.003,
         "warmup": 20, "kf_r": 0.005, "d_clip": 0.15, "output_clip": 0.2,
         "norm_ref_rmse_pct": 8.0, "norm_ref_cost_pct": 0.04,
