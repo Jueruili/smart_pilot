@@ -134,6 +134,19 @@ def run_walk_forward(
 
         # ── OOS：三策略回測 ──
 
+        # 找最佳參數（對應 HV 最高的點）
+        def _best_param(pts, param_key):
+            best_hv, best_val = -1.0, pts[0][param_key]
+            for p in pts:
+                if p["rmse"] / norm_ref_rmse <= 1.0 and p["ann_cost"] / norm_ref_cost <= 1.0:
+                    hv = calc_hypervolume(
+                        [{"rmse": p["rmse"] / norm_ref_rmse, "cost": p["ann_cost"] / norm_ref_cost}],
+                        {"rmse": 1.0, "cost": 1.0}
+                    )
+                    if hv > best_hv:
+                        best_hv, best_val = hv, p[param_key]
+            return best_val
+
         # Smart Pilot：掃 deadband 取整條 Pareto，計算 OOS HV
         oos_sp_pareto = scan_pareto_frontier(
             oos_rets_stock, oos_rets_bond,
@@ -142,7 +155,7 @@ def run_walk_forward(
             target_w=target_w, fee_rate=fee_rate,
             kf_q=best_q, kf_r=kf_r, kp=best_kp, kd=best_kd,
             deadband_values=deadband_values,
-            warmup=len(oos_warmup_stock),
+            warmup=0,
             warmup_prices_stock=oos_warmup_stock,
             warmup_prices_bond=oos_warmup_bond,
             d_clip=d_clip, output_clip=output_clip,
@@ -151,24 +164,25 @@ def run_walk_forward(
         norm_sp_pts = [
             {"rmse": p["rmse"] / norm_ref_rmse, "cost": p["ann_cost"] / norm_ref_cost}
             for p in sp_pts
+            if p["rmse"] / norm_ref_rmse <= 1.0 and p["ann_cost"] / norm_ref_cost <= 1.0
         ]
         oos_sp_hv = calc_hypervolume(norm_sp_pts, {"rmse": 1.0, "cost": 1.0})
 
-        # Smart Pilot：用中間 deadband 跑單點取績效指標
-        mid_db = deadband_values[len(deadband_values) // 2]
+        # Smart Pilot：用最佳 deadband 跑單點取績效指標
+        best_sp_db = _best_param(sp_pts, "deadband")
         oos_sp = run_smart_pilot(
             oos_rets_stock, oos_rets_bond,
             oos_prices_stock[1:], oos_prices_bond[1:], oos_dates[1:],
             target_w=target_w, fee_rate=fee_rate,
             kf_q=best_q, kf_r=kf_r, kp=best_kp, kd=best_kd,
-            deadband=mid_db,
-            warmup=len(oos_warmup_stock),
+            deadband=best_sp_db,
+            warmup=0,
             warmup_prices_stock=oos_warmup_stock,
             warmup_prices_bond=oos_warmup_bond,
             d_clip=d_clip, output_clip=output_clip,
         )
 
-        # Threshold-only：掃 Pareto 計算 HV
+        # Threshold-only：掃 Pareto 計算 HV（warmup=0 已由 scan_pareto_frontier 內部處理）
         oos_to_pareto = scan_pareto_frontier(
             oos_rets_stock, oos_rets_bond,
             oos_prices_stock[1:], oos_prices_bond[1:],
@@ -176,7 +190,7 @@ def run_walk_forward(
             target_w=target_w, fee_rate=fee_rate,
             kf_q=best_q, kf_r=kf_r, kp=best_kp, kd=best_kd,
             deadband_values=deadband_values,
-            warmup=len(oos_warmup_stock),
+            warmup=0,
             warmup_prices_stock=oos_warmup_stock,
             warmup_prices_bond=oos_warmup_bond,
         )
@@ -184,17 +198,19 @@ def run_walk_forward(
         norm_to_pts = [
             {"rmse": p["rmse"] / norm_ref_rmse, "cost": p["ann_cost"] / norm_ref_cost}
             for p in to_pts
+            if p["rmse"] / norm_ref_rmse <= 1.0 and p["ann_cost"] / norm_ref_cost <= 1.0
         ]
         oos_to_hv = calc_hypervolume(norm_to_pts, {"rmse": 1.0, "cost": 1.0})
 
-        # Threshold-only：用 drift_tolerance=0.05 跑單點取績效指標
+        # Threshold-only：用最佳 tolerance 跑單點取績效指標
+        best_to_tol = _best_param(to_pts, "tolerance")
         oos_to = run_threshold_only(
             oos_rets_stock, oos_rets_bond, oos_dates[1:],
-            target_w=target_w, drift_tolerance=0.05,
-            fee_rate=fee_rate, warmup=1,
+            target_w=target_w, drift_tolerance=best_to_tol,
+            fee_rate=fee_rate, warmup=0,
         )
 
-        # Time-and-threshold：掃 Pareto 計算 HV
+        # Time-and-threshold：掃 Pareto 計算 HV（warmup=0 已由 scan_pareto_frontier 內部處理）
         oos_tat_pareto = scan_pareto_frontier(
             oos_rets_stock, oos_rets_bond,
             oos_prices_stock[1:], oos_prices_bond[1:],
@@ -202,7 +218,7 @@ def run_walk_forward(
             target_w=target_w, fee_rate=fee_rate,
             kf_q=best_q, kf_r=kf_r, kp=best_kp, kd=best_kd,
             deadband_values=deadband_values,
-            warmup=len(oos_warmup_stock),
+            warmup=0,
             warmup_prices_stock=oos_warmup_stock,
             warmup_prices_bond=oos_warmup_bond,
         )
@@ -210,14 +226,16 @@ def run_walk_forward(
         norm_tat_pts = [
             {"rmse": p["rmse"] / norm_ref_rmse, "cost": p["ann_cost"] / norm_ref_cost}
             for p in tat_pts
+            if p["rmse"] / norm_ref_rmse <= 1.0 and p["ann_cost"] / norm_ref_cost <= 1.0
         ]
         oos_tat_hv = calc_hypervolume(norm_tat_pts, {"rmse": 1.0, "cost": 1.0})
 
-        # Time-and-threshold：用 threshold=0.05 跑單點取績效指標
+        # Time-and-threshold：用最佳 threshold 跑單點取績效指標
+        best_tat_thresh = _best_param(tat_pts, "threshold")
         oos_tat = run_time_and_threshold(
             oos_rets_stock, oos_rets_bond, oos_dates[1:],
-            target_w=target_w, threshold=0.05,
-            fee_rate=fee_rate, warmup=1,
+            target_w=target_w, threshold=best_tat_thresh,
+            fee_rate=fee_rate, warmup=0,
         )
 
         rounds.append({

@@ -424,12 +424,12 @@ def scan_pareto_frontier(
             "deadband": float(deadband),
         })
 
-    # Threshold-only
+    # Threshold-only（固定 warmup=0）
     for tolerance in np.linspace(0.005, 0.15, n_points):
         r = run_threshold_only(
             rets_stock, rets_bond, dates,
             target_w=target_w, drift_tolerance=float(tolerance), fee_rate=fee_rate,
-            warmup=warmup,
+            warmup=0,
         )
         results["threshold_only"].append({
             "rmse": r["rmse"],
@@ -438,13 +438,13 @@ def scan_pareto_frontier(
             "tolerance": float(tolerance),
         })
 
-    # Time-and-threshold（掃描 threshold）
+    # Time-and-threshold（固定 warmup=0）
     for threshold in threshold_values:
         r = run_time_and_threshold(
             rets_stock, rets_bond, dates,
             target_w=target_w, fee_rate=fee_rate,
             threshold=float(threshold),
-            warmup=warmup,
+            warmup=0,
         )
         results["time_and_threshold"].append({
             "rmse": r["rmse"],
