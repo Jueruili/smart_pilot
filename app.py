@@ -1859,7 +1859,7 @@ def render_tab_monte_carlo(params: dict, data: pd.DataFrame,
     st.header("Walk-Forward MC - 矩陣化蒙地卡羅模擬")
     st.markdown("""
     以 Walk-Forward 各窗口的**平均最佳參數 (Kp, Kd, Q)**，
-    對未來期間用區塊重抽樣（Block Bootstrap）產生虛擬路徑，
+    對指定期間用區塊重抽樣（Block Bootstrap）產生虛擬路徑，
     評估三策略的績效分布與 Smart Pilot 的相對優勢。
     """)
     # ── 前置檢查：Walk-Forward 快取（改為軟性依賴）──
@@ -1874,9 +1874,6 @@ def render_tab_monte_carlo(params: dict, data: pd.DataFrame,
         avg_kp_auto = float(np.mean([r["best_kp"] for r in rounds]))
         avg_kd_auto = float(np.mean([r["best_kd"] for r in rounds]))
         avg_q_auto  = float(np.mean([r["best_q"]  for r in rounds]))
-        last_is_end = rounds[-1]["is_end"]
-        wf_sim_start_auto = date(last_is_end.year + 1, 1, 1)
-        wf_hist_end_auto  = last_is_end
         st.success(
             f"✅ Walk-Forward 快取已載入｜平均參數：Kp={avg_kp_auto:.3f}, "
             f"Kd={avg_kd_auto:.3f}, Q={avg_q_auto:.6f}（{len(rounds)} 個窗口）"
@@ -1885,84 +1882,14 @@ def render_tab_monte_carlo(params: dict, data: pd.DataFrame,
         avg_kp_auto = 0.5
         avg_kd_auto = 0.5
         avg_q_auto  = 0.001
-        wf_hist_end_auto  = params["end_date"]
-        wf_sim_start_auto = date(params["end_date"].year + 1, 1, 1)
         st.warning(
             "⚠️ 尚未執行 Walk-Forward，使用手動設定的參數。"
             "可在 Walk-Forward 分頁執行後，本頁將自動帶入平均最佳參數。"
         )
 
-    # ── 日期覆蓋區塊 ──
-    with st.expander("📅 重抽樣來源區間 & 模擬期間（可覆蓋）", expanded=not wf_available):
-        with st.form("form_mc_dates"):
-            st.markdown("**重抽樣來源區間**（歷史報酬率來源，用於 Block Bootstrap）")
-            col1, col2 = st.columns(2)
-            with col1:
-                hist_start_override = st.date_input(
-                    "重抽樣來源：開始日",
-                    value=params["start_date"],
-                    help="歷史報酬率的起始日，預設為 sidebar 的回測開始日"
-                )
-            with col2:
-                hist_end_override = st.date_input(
-                    "重抽樣來源：結束日",
-                    value=wf_hist_end_auto,
-                    help="歷史報酬率的截止日，預設為最後一個 IS 結束日（如有 WF 快取）"
-                )
-            st.markdown("**虛擬股價路徑模擬期間**")
-            col1, col2 = st.columns(2)
-            with col1:
-                sim_start_override = st.date_input(
-                    "模擬期間：開始日",
-                    value=wf_sim_start_auto,
-                    help="虛擬路徑的起始日，預設為最後一個 IS 結束的隔年年初"
-                )
-            with col2:
-                sim_end_override = st.date_input(
-                    "模擬期間：結束日",
-                    value=date(datetime.today().year, 1, 1),
-                    help="虛擬路徑的終止日"
-                )
-            apply_dates = st.form_submit_button("套用日期設定", use_container_width=True)
-        if apply_dates:
-            st.session_state["mc_hist_start"] = hist_start_override
-            st.session_state["mc_hist_end"]   = hist_end_override
-            st.session_state["mc_sim_start"]  = sim_start_override
-            st.session_state["mc_sim_end"]    = sim_end_override
-            st.success(
-                f"已套用：重抽樣 {hist_start_override}~{hist_end_override}｜"
-                f"模擬 {sim_start_override}~{sim_end_override}"
-            )
-
-    # 決定實際使用的日期
-    mc_hist_start = st.session_state.get("mc_hist_start", params["start_date"])
-    mc_hist_end   = st.session_state.get("mc_hist_end",   wf_hist_end_auto)
-    mc_sim_start  = st.session_state.get("mc_sim_start",  wf_sim_start_auto)
-    mc_sim_end    = st.session_state.get("mc_sim_end",    date(datetime.today().year, 1, 1))
-
-    # 計算模擬天數
-    n_days_simulate = len(pd.bdate_range(mc_sim_start, mc_sim_end))
-    if n_days_simulate <= 0:
-        st.error("模擬結束日必須晚於開始日，請重新設定")
-        return
-
-    # 切出重抽樣來源價格
-    hist_start_idx = data.index.searchsorted(pd.Timestamp(mc_hist_start))
-    hist_end_idx   = data.index.searchsorted(pd.Timestamp(mc_hist_end))
-    hist_prices_stock = data[params["ticker1"]].values[hist_start_idx:hist_end_idx]
-    hist_prices_bond  = data[params["ticker2"]].values[hist_start_idx:hist_end_idx]
-
-    if len(hist_prices_stock) < 30:
-        st.error(f"重抽樣來源資料不足（僅 {len(hist_prices_stock)} 天），請擴大來源區間")
-        return
-
-    st.info(
-        f"重抽樣來源：{mc_hist_start} ~ {mc_hist_end}（{len(hist_prices_stock)} 個交易日）｜"
-        f"模擬期間：{mc_sim_start} ~ {mc_sim_end}（{n_days_simulate} 個交易日）"
-    )
     # ── 手動覆蓋參數（可選）──
     with st.expander("⚙️ 手動覆蓋 Kp / Kd / Q（選填，留空則使用 Walk-Forward 平均值）",
-                     expanded=False):
+                     expanded=not wf_available):
         with st.form("form_mc_override"):
             col1, col2, col3 = st.columns(3)
             with col1:
@@ -2000,6 +1927,20 @@ def render_tab_monte_carlo(params: dict, data: pd.DataFrame,
         )
     # ── 主設定 form ──
     with st.form("form_mc"):
+        st.markdown("**📅 重抽樣來源區間**（歷史報酬率來源，模擬路徑長度 = 此區間的實際交易日數）")
+        col1, col2 = st.columns(2)
+        with col1:
+            hist_start = st.date_input(
+                "重抽樣來源：開始日",
+                value=data.index[0].date(),
+                help="歷史報酬率的起始日"
+            )
+        with col2:
+            hist_end = st.date_input(
+                "重抽樣來源：結束日",
+                value=data.index[-1].date(),
+                help="歷史報酬率的截止日"
+            )
         col1, col2 = st.columns(2)
         with col1:
             n_paths = st.number_input(
@@ -2046,10 +1987,31 @@ def render_tab_monte_carlo(params: dict, data: pd.DataFrame,
         submitted_mc = st.form_submit_button(
             "▶ 執行 Walk-Forward MC", type="primary", use_container_width=True
         )
+
+    # ── 驗證日期並切出重抽樣來源價格 ──
+    if hist_start >= hist_end:
+        st.error("重抽樣來源開始日必須早於結束日，請重新設定")
+        return
+
+    mask = (data.index.date >= hist_start) & (data.index.date <= hist_end)
+    hist_data = data.loc[mask]
+
+    if len(hist_data) < int(block_size) + 2:
+        st.error(f"重抽樣來源資料不足（僅 {len(hist_data)} 天，需至少 {int(block_size) + 2} 天），請擴大來源區間")
+        return
+
+    hist_prices_stock_mc = hist_data[params["ticker1"]].values
+    hist_prices_bond_mc  = hist_data[params["ticker2"]].values
+    n_days_simulate = len(hist_data)
+
+    st.info(
+        f"重抽樣來源：{hist_start} ~ {hist_end}（{n_days_simulate} 個交易日）｜"
+        f"模擬路徑長度：{n_days_simulate} 天"
+    )
+
     # ── Hash 比對 ──
     mc_hash_params = {
         "ticker1": params["ticker1"], "ticker2": params["ticker2"],
-        "start_date": str(params["start_date"]), "end_date": str(params["end_date"]),
         "target_w": params["target_w"], "fee_rate": params["fee_rate"],
         "kf_r": params["kf_r"], "d_clip": params["d_clip"], "output_clip": params["output_clip"],
         "norm_ref_rmse": params["norm_ref_rmse"], "norm_ref_cost": params["norm_ref_cost"],
@@ -2058,10 +2020,8 @@ def render_tab_monte_carlo(params: dict, data: pd.DataFrame,
         "n_days_simulate": n_days_simulate, "random_seed": int(random_seed),
         "mc_db_min": mc_db_min, "mc_db_max": mc_db_max, "mc_db_points": int(mc_db_points),
         "mc_tol_min": mc_tol_min, "mc_tol_max": mc_tol_max, "mc_tol_points": int(mc_tol_points),
-        "mc_hist_start": str(mc_hist_start),
-        "mc_hist_end":   str(mc_hist_end),
-        "mc_sim_start":  str(mc_sim_start),
-        "mc_sim_end":    str(mc_sim_end),
+        "hist_start": str(hist_start),
+        "hist_end":   str(hist_end),
     }
     current_hash = make_params_hash(mc_hash_params)
     mc_cache_path = Path("data/cache/mc_results.json")
@@ -2079,19 +2039,19 @@ def render_tab_monte_carlo(params: dict, data: pd.DataFrame,
             mc_progress = st.progress(0)
             mc_status   = st.empty()
             mc_status.text(
-                f"矩陣化生成 {int(n_paths)} 條路徑（{mc_sim_start}~{mc_sim_end}）並平行回測中..."
+                f"矩陣化生成 {int(n_paths)} 條路徑（來源：{hist_start}~{hist_end}）並平行回測中..."
             )
             t0 = time.time()
             # ── DEBUG ──
             print(f"warmup_stock len={len(warmup_prices_stock)}, warmup_bond len={len(warmup_prices_bond)}")
-            print(f"hist_stock len={len(hist_prices_stock)}, hist_bond len={len(hist_prices_bond)}")
-            print(f"NaN in hist_stock: {np.isnan(hist_prices_stock).sum()}")
-            print(f"NaN in hist_bond:  {np.isnan(hist_prices_bond).sum()}")
+            print(f"hist_stock len={len(hist_prices_stock_mc)}, hist_bond len={len(hist_prices_bond_mc)}")
+            print(f"NaN in hist_stock: {np.isnan(hist_prices_stock_mc).sum()}")
+            print(f"NaN in hist_bond:  {np.isnan(hist_prices_bond_mc).sum()}")
             print(f"n_days_simulate={n_days_simulate}, block_size={int(block_size)}")
             from validation.monte_carlo import run_wf_monte_carlo
             mc_result = run_wf_monte_carlo(
-                hist_prices_stock=hist_prices_stock,
-                hist_prices_bond=hist_prices_bond,
+                hist_prices_stock=hist_prices_stock_mc,
+                hist_prices_bond=hist_prices_bond_mc,
                 n_paths=int(n_paths),
                 n_days_simulate=n_days_simulate,
                 block_size=int(block_size),
