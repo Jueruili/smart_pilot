@@ -1933,6 +1933,7 @@ def render_tab_monte_carlo(params: dict, data: pd.DataFrame,
             hist_start = st.date_input(
                 "重抽樣來源：開始日",
                 value=data.index[0].date(),
+                max_value=date(2026, 1, 1),
                 help="歷史報酬率的起始日"
             )
         with col2:
